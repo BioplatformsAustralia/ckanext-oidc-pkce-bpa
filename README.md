@@ -2,7 +2,7 @@
 
 # ckanext-oidc-pkce-bpa
 
-BPA extended OIDC plugin for integration with Auth0.
+BPA flavored OIDC CKAN plugin, used for integration with Auth0, based on the [ckanex-oidc-pkce](https://github.com/DataShades/ckanext-oidc-pkce).
 
 ## Requirements
 
@@ -18,7 +18,7 @@ Compatibility with core CKAN versions:
 | 2.6 and earlier | not tested    |
 | 2.7             | not tested    |
 | 2.8             | not tested    |
-| 2.9             | yes    |
+| 2.9             | not yet    |
 
 Suggested values:
 
