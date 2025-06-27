@@ -2,8 +2,7 @@
 
 # ckanext-oidc-pkce-bpa
 
-**TODO:** Put a description of your extension here:  What does it do? What features does it have? Consider including some screenshots or embedding a video!
-
+BPA extended OIDC plugin for integration with Auth0.
 
 ## Requirements
 
@@ -19,7 +18,7 @@ Compatibility with core CKAN versions:
 | 2.6 and earlier | not tested    |
 | 2.7             | not tested    |
 | 2.8             | not tested    |
-| 2.9             | not tested    |
+| 2.9             | yes    |
 
 Suggested values:
 
@@ -30,10 +29,6 @@ Suggested values:
 
 
 ## Installation
-
-**TODO:** Add any additional install steps to the list below.
-   For example installing any non-Python dependencies or adding any required
-   config settings.
 
 To install ckanext-oidc-pkce-bpa:
 
