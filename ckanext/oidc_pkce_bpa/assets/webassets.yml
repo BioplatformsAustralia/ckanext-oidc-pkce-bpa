@@ -1,0 +1,14 @@
+# oidc_pkce_bpa-js:
+#   filter: rjsmin
+#   output: ckanext-oidc_pkce_bpa/%(version)s-oidc_pkce_bpa.js
+#   contents:
+#     - js/oidc_pkce_bpa.js
+#   extra:
+#     preload:
+#       - base/main
+
+# oidc_pkce_bpa-css:
+#   filter: cssrewrite
+#   output: ckanext-oidc_pkce_bpa/%(version)s-oidc_pkce_bpa.css
+#   contents:
+#     - css/oidc_pkce_bpa.css
