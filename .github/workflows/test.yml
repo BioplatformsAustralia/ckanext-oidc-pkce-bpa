@@ -4,9 +4,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
     container:
-      # The CKAN version tag of the Solr and Postgres containers should match
-      # the one of the container the tests run on.
-      # You can switch this base image with a custom image tailored to your project
       image: ckan/ckan-dev:2.10
     services:
       solr:
@@ -19,7 +16,7 @@ jobs:
           POSTGRES_DB: postgres
         options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
       redis:
-          image: redis:3
+        image: redis:3
 
     env:
       CKAN_SQLALCHEMY_URL: postgresql://ckan_default:pass@postgres/ckan_test
@@ -31,13 +28,17 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install requirements
-      # Install any extra requirements your extension has here (dev requirements, other extensions etc)
       run: |
+        # Explicitly install base extension first to avoid ImportError
+        pip install -e git+https://github.com/DataShades/ckanext-oidc-pkce.git#egg=ckanext-oidc-pkce
+
+        # Now install rest of requirements
         pip install -r requirements.txt
         pip install -r dev-requirements.txt
+
+        # Install this extension last in editable mode
         pip install -e .
     - name: Setup extension
-      # Extra initialization steps
       run: |
         # Replace default path to CKAN core config file with the one on the container
         sed -i -e 's/use = config:.*/use = config:\/srv\/app\/src\/ckan\/test-core.ini/' test.ini
@@ -45,4 +46,3 @@ jobs:
         ckan -c test.ini db init
     - name: Run tests
       run: pytest --ckan-ini=test.ini --cov=ckanext.oidc_pkce_bpa --disable-warnings ckanext/oidc_pkce_bpa
-
