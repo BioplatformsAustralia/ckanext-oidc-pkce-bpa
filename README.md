@@ -6,11 +6,7 @@
 
 
 ## Requirements
-
-**TODO:** For example, you might want to mention here which versions of CKAN this
-extension works with.
-
-If your extension works across different versions you can add the following table:
+- `pip` (or `pip3` version 24.0+)
 
 Compatibility with core CKAN versions:
 
