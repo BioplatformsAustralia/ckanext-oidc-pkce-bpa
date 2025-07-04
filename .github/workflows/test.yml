@@ -29,9 +29,6 @@ jobs:
     - uses: actions/checkout@v4
     - name: Install requirements
       run: |
-        # Explicitly install base extension first to avoid ImportError
-        pip install -e git+https://github.com/DataShades/ckanext-oidc-pkce.git#egg=ckanext-oidc-pkce
-
         # Now install rest of requirements
         pip install -r requirements.txt
         pip install -r dev-requirements.txt
