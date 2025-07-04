@@ -22,6 +22,6 @@ adding Bioplatforms Australia-specific behavior such as custom claim parsing, ex
     zip_safe=False,
     entry_points="""
         [ckan.plugins]
-        oidc_pkce_bpa=ckanext.oidc_pkce_bpa.plugin:OIDCPkceBpaPlugin
+        oidc_pkce_bpa=ckanext.oidc_pkce_bpa.plugin:OidcPkceBpaPlugin
     """,
 )
