@@ -1,18 +1,10 @@
-import ckan.plugins as plugins
-import ckan.plugins.toolkit as toolkit
+import logging
+from ckan.plugins import SingletonPlugin, implements, interfaces
 
-from ckanext.oidc_pkce.plugin import OidcPkcePlugin
-from ckan.plugins import SingletonPlugin
+from ckanext.oidc_pkce.interfaces import IOidcPkce
 
-class OidcPkceBpaPlugin(OidcPkcePlugin, SingletonPlugin):
-    plugins.implements(plugins.IConfigurer)
-    
+log = logging.getLogger(__name__)
 
-    # IConfigurer
+class OidcPkceBpaPlugin(SingletonPlugin):
+    implements(interfaces.IOidcPkce, inherit=True)
 
-    def update_config(self, config_):
-        toolkit.add_template_directory(config_, "templates")
-        toolkit.add_public_directory(config_, "public")
-        toolkit.add_resource("assets", "oidc_pkce_bpa")
-
-    
