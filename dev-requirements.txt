@@ -1,1 +1,2 @@
 pytest-ckan
+git+https://github.com/DataShades/ckanext-oidc-pkce.git@master#egg=ckanext-oidc-pkce

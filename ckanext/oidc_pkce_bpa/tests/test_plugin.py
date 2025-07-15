@@ -47,7 +47,10 @@ To temporary patch the CKAN configuration for the duration of a test you can use
     def test_some_action():
         pass
 """
+import pytest
 import ckanext.oidc_pkce_bpa.plugin as plugin
+
+from ckan.plugins.core import plugin_loaded
 
 
 @pytest.mark.ckan_config("ckan.plugins", "oidc_pkce_bpa")

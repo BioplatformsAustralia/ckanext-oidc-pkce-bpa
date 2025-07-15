@@ -6,11 +6,7 @@
 
 
 ## Requirements
-
-**TODO:** For example, you might want to mention here which versions of CKAN this
-extension works with.
-
-If your extension works across different versions you can add the following table:
+- `pip` (or `pip3` version 24.0+)
 
 Compatibility with core CKAN versions:
 
@@ -19,7 +15,8 @@ Compatibility with core CKAN versions:
 | 2.6 and earlier | not tested    |
 | 2.7             | not tested    |
 | 2.8             | not tested    |
-| 2.9             | not tested    |
+| 2.9             | yes           |
+| 2.10            | not yet       |
 
 Suggested values:
 
@@ -70,21 +67,21 @@ None at present
 
 ## Developer installation
 
-To install ckanext-oidc-pkce-bpa for development, activate your CKAN virtualenv and
+To install ckanext-oidc-pkce-bpa for development, install, activate your CKAN virtualenv and
 do:
 
-    git clone https://github.com/BioplatformsAustralia/ckanext-oidc-pkce-bpa.git
-    cd ckanext-oidc-pkce-bpa
-    python setup.py develop
-    pip install -r dev-requirements.txt
-
+```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    (venv) pip install -r dev-requirements.txt
+```
 
 ## Tests
 
 To run the tests, do:
-
-    pytest --ckan-ini=test.ini
-
+```bash
+    pytest --ckan-ini=test.ini --cov=ckanext.oidc_pkce_bpa --disable-warnings ckanext/oidc_pkce_bpa
+```
 
 ## Releasing a new version of ckanext-oidc-pkce-bpa
 
