@@ -47,13 +47,97 @@ To temporary patch the CKAN configuration for the duration of a test you can use
     def test_some_action():
         pass
 """
+import re
 import pytest
-import ckanext.oidc_pkce_bpa.plugin as plugin
+from unittest import mock
 
-from ckan.plugins.core import plugin_loaded
+from ckan import model
+import ckan.plugins.toolkit as tk
 
+from ckanext.oidc_pkce_bpa.plugin import OidcPkceBpaPlugin
 
-@pytest.mark.ckan_config("ckan.plugins", "oidc_pkce_bpa")
-@pytest.mark.usefixtures("with_plugins")
-def test_plugin():
-    assert plugin_loaded("oidc_pkce_bpa")
+@pytest.fixture
+def plugin():
+    return OidcPkceBpaPlugin()
+
+@pytest.fixture
+def clean_session():
+    yield
+    model.Session.remove()
+
+def test_create_new_user(plugin, clean_session):
+    userinfo = {
+        "sub": "auth0|123",
+        "email": "newuser@example.com",
+        "name": "New User",
+        "preferred_username": "newuser"
+    }
+
+    user = plugin.get_oidc_user(userinfo)
+
+    assert user.name == "newuser"
+    assert user.email == "newuser@example.com"
+    assert user.fullname == "New User"
+    assert user.plugin_extras["oidc_pkce"]["auth0_id"] == "auth0|123"
+
+def test_existing_user_backfill_auth0(plugin, clean_session):
+    user = model.User(name="existinguser", email="existing@example.com", fullname="Existing User", password="")
+    model.Session.add(user)
+    model.Session.commit()
+
+    user.plugin_extras = {}
+    model.Session.commit()
+
+    userinfo = {
+        "sub": "auth0|456",
+        "email": "existing@example.com",
+        "name": "Existing User",
+        "preferred_username": "existinguser"
+    }
+
+    updated_user = plugin.get_oidc_user(userinfo)
+    assert updated_user.plugin_extras["oidc_pkce"]["auth0_id"] == "auth0|456"
+
+def test_existing_user_update_fullname(plugin, clean_session):
+    user = model.User(name="fullnameuser", email="full@example.com", fullname="Old Name", password="")
+    user.plugin_extras = {"oidc_pkce": {"auth0_id": "auth0|789"}}
+    model.Session.add(user)
+    model.Session.commit()
+
+    userinfo = {
+        "sub": "auth0|789",
+        "email": "full@example.com",
+        "name": "New Name",
+        "preferred_username": "fullnameuser"
+    }
+
+    updated_user = plugin.get_oidc_user(userinfo)
+    assert updated_user.fullname == "New Name"
+
+def test_missing_sub_raises(plugin):
+    userinfo = {
+        "email": "missing@example.com",
+        "preferred_username": "someuser"
+    }
+
+    with pytest.raises(tk.NotAuthorized, match="sub"):
+        plugin.get_oidc_user(userinfo)
+
+def test_missing_preferred_username_raises(plugin):
+    userinfo = {
+        "sub": "auth0|999",
+        "email": "missing@example.com"
+    }
+
+    with pytest.raises(tk.NotAuthorized, match="preferred_username"):
+        plugin.get_oidc_user(userinfo)
+
+def test_invalid_preferred_username_raises(plugin):
+    userinfo = {
+        "sub": "auth0|999",
+        "email": "badformat@example.com",
+        "preferred_username": "Invalid!User"
+    }
+
+    with pytest.raises(tk.ValidationError, match="Invalid BPA username format"):
+        plugin.get_oidc_user(userinfo)
