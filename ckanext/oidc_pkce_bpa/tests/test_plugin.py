@@ -70,7 +70,7 @@ def test_create_new_user(plugin, clean_session):
         "sub": "auth0|123",
         "email": "newuser@example.com",
         "name": "New User",
-        "preferred_username": "newuser"
+        "username": "newuser"
     }
 
     user = plugin.get_oidc_user(userinfo)
@@ -92,7 +92,7 @@ def test_existing_user_backfill_auth0(plugin, clean_session):
         "sub": "auth0|456",
         "email": "existing@example.com",
         "name": "Existing User",
-        "preferred_username": "existinguser"
+        "username": "existinguser"
     }
 
     updated_user = plugin.get_oidc_user(userinfo)
@@ -108,7 +108,7 @@ def test_existing_user_update_fullname(plugin, clean_session):
         "sub": "auth0|789",
         "email": "full@example.com",
         "name": "New Name",
-        "preferred_username": "fullnameuser"
+        "username": "fullnameuser"
     }
 
     updated_user = plugin.get_oidc_user(userinfo)
@@ -117,26 +117,26 @@ def test_existing_user_update_fullname(plugin, clean_session):
 def test_missing_sub_raises(plugin):
     userinfo = {
         "email": "missing@example.com",
-        "preferred_username": "someuser"
+        "username": "someuser"
     }
 
     with pytest.raises(tk.NotAuthorized, match="sub"):
         plugin.get_oidc_user(userinfo)
 
-def test_missing_preferred_username_raises(plugin):
+def test_missing_username_raises(plugin):
     userinfo = {
         "sub": "auth0|999",
         "email": "missing@example.com"
     }
 
-    with pytest.raises(tk.NotAuthorized, match="preferred_username"):
+    with pytest.raises(tk.NotAuthorized, match="username"):
         plugin.get_oidc_user(userinfo)
 
-def test_invalid_preferred_username_raises(plugin):
+def test_invalid_username_raises(plugin):
     userinfo = {
         "sub": "auth0|999",
         "email": "badformat@example.com",
-        "preferred_username": "Invalid!User"
+        "username": "Invalid!User"
     }
 
     with pytest.raises(tk.ValidationError, match="Invalid BPA username format"):
