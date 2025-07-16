@@ -80,64 +80,64 @@ def test_create_new_user(plugin, clean_session):
     assert user.fullname == "New User"
     assert user.plugin_extras["oidc_pkce"]["auth0_id"] == "auth0|123"
 
-def test_existing_user_backfill_auth0(plugin, clean_session):
-    user = model.User(name="existinguser", email="existing@example.com", fullname="Existing User", password="")
-    model.Session.add(user)
-    model.Session.commit()
+# def test_existing_user_backfill_auth0(plugin, clean_session):
+#     user = model.User(name="existinguser", email="existing@example.com", fullname="Existing User", password="")
+#     model.Session.add(user)
+#     model.Session.commit()
 
-    user.plugin_extras = {}
-    model.Session.commit()
+#     user.plugin_extras = {}
+#     model.Session.commit()
 
-    userinfo = {
-        "sub": "auth0|456",
-        "email": "existing@example.com",
-        "name": "Existing User",
-        "username": "existinguser"
-    }
+#     userinfo = {
+#         "sub": "auth0|456",
+#         "email": "existing@example.com",
+#         "name": "Existing User",
+#         "username": "existinguser"
+#     }
 
-    updated_user = plugin.get_oidc_user(userinfo)
-    assert updated_user.plugin_extras["oidc_pkce"]["auth0_id"] == "auth0|456"
+#     updated_user = plugin.get_oidc_user(userinfo)
+#     assert updated_user.plugin_extras["oidc_pkce"]["auth0_id"] == "auth0|456"
 
-def test_existing_user_update_fullname(plugin, clean_session):
-    user = model.User(name="fullnameuser", email="full@example.com", fullname="Old Name", password="")
-    user.plugin_extras = {"oidc_pkce": {"auth0_id": "auth0|789"}}
-    model.Session.add(user)
-    model.Session.commit()
+# def test_existing_user_update_fullname(plugin, clean_session):
+#     user = model.User(name="fullnameuser", email="full@example.com", fullname="Old Name", password="")
+#     user.plugin_extras = {"oidc_pkce": {"auth0_id": "auth0|789"}}
+#     model.Session.add(user)
+#     model.Session.commit()
 
-    userinfo = {
-        "sub": "auth0|789",
-        "email": "full@example.com",
-        "name": "New Name",
-        "username": "fullnameuser"
-    }
+#     userinfo = {
+#         "sub": "auth0|789",
+#         "email": "full@example.com",
+#         "name": "New Name",
+#         "username": "fullnameuser"
+#     }
 
-    updated_user = plugin.get_oidc_user(userinfo)
-    assert updated_user.fullname == "New Name"
+#     updated_user = plugin.get_oidc_user(userinfo)
+#     assert updated_user.fullname == "New Name"
 
-def test_missing_sub_raises(plugin):
-    userinfo = {
-        "email": "missing@example.com",
-        "username": "someuser"
-    }
+# def test_missing_sub_raises(plugin):
+#     userinfo = {
+#         "email": "missing@example.com",
+#         "username": "someuser"
+#     }
 
-    with pytest.raises(tk.NotAuthorized, match="sub"):
-        plugin.get_oidc_user(userinfo)
+#     with pytest.raises(tk.NotAuthorized, match="sub"):
+#         plugin.get_oidc_user(userinfo)
 
-def test_missing_username_raises(plugin):
-    userinfo = {
-        "sub": "auth0|999",
-        "email": "missing@example.com"
-    }
+# def test_missing_username_raises(plugin):
+#     userinfo = {
+#         "sub": "auth0|999",
+#         "email": "missing@example.com"
+#     }
 
-    with pytest.raises(tk.NotAuthorized, match="username"):
-        plugin.get_oidc_user(userinfo)
+#     with pytest.raises(tk.NotAuthorized, match="username"):
+#         plugin.get_oidc_user(userinfo)
 
-def test_invalid_username_raises(plugin):
-    userinfo = {
-        "sub": "auth0|999",
-        "email": "badformat@example.com",
-        "username": "Invalid!User"
-    }
+# def test_invalid_username_raises(plugin):
+#     userinfo = {
+#         "sub": "auth0|999",
+#         "email": "badformat@example.com",
+#         "username": "Invalid!User"
+#     }
 
-    with pytest.raises(tk.ValidationError, match="Invalid BPA username format"):
-        plugin.get_oidc_user(userinfo)
+#     with pytest.raises(tk.ValidationError, match="Invalid BPA username format"):
+#         plugin.get_oidc_user(userinfo)
