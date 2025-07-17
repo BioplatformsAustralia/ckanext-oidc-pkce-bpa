@@ -114,23 +114,23 @@ def test_existing_user_update_fullname(plugin, clean_session):
     updated_user = plugin.get_oidc_user(userinfo)
     assert updated_user.fullname == "New Name"
 
-# def test_missing_sub_raises(plugin):
-#     userinfo = {
-#         "email": "missing@example.com",
-#         "username": "someuser"
-#     }
+def test_missing_sub_raises(plugin):
+    userinfo = {
+        "email": "missing@example.com",
+        "username": "someuser"
+    }
 
-#     with pytest.raises(tk.NotAuthorized, match="sub"):
-#         plugin.get_oidc_user(userinfo)
+    with pytest.raises(tk.NotAuthorized, match="sub"):
+        plugin.get_oidc_user(userinfo)
 
-# def test_missing_username_raises(plugin):
-#     userinfo = {
-#         "sub": "auth0|999",
-#         "email": "missing@example.com"
-#     }
+def test_missing_username_raises(plugin):
+    userinfo = {
+        "sub": "auth0|999",
+        "email": "missing@example.com"
+    }
 
-#     with pytest.raises(tk.NotAuthorized, match="username"):
-#         plugin.get_oidc_user(userinfo)
+    with pytest.raises(tk.NotAuthorized, match="username"):
+        plugin.get_oidc_user(userinfo)
 
 # def test_invalid_username_raises(plugin):
 #     userinfo = {
