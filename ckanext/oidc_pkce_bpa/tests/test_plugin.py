@@ -98,21 +98,21 @@ def test_existing_user_backfill_auth0(plugin, clean_session):
     updated_user = plugin.get_oidc_user(userinfo)
     assert updated_user.plugin_extras["oidc_pkce"]["auth0_id"] == "auth0|456"
 
-# def test_existing_user_update_fullname(plugin, clean_session):
-#     user = model.User(name="fullnameuser", email="full@example.com", fullname="Old Name", password="")
-#     user.plugin_extras = {"oidc_pkce": {"auth0_id": "auth0|789"}}
-#     model.Session.add(user)
-#     model.Session.commit()
+def test_existing_user_update_fullname(plugin, clean_session):
+    user = model.User(name="fullnameuser", email="full@example.com", fullname="Old Name", password="")
+    user.plugin_extras = {"oidc_pkce": {"auth0_id": "auth0|789"}}
+    model.Session.add(user)
+    model.Session.commit()
 
-#     userinfo = {
-#         "sub": "auth0|789",
-#         "email": "full@example.com",
-#         "name": "New Name",
-#         "username": "fullnameuser"
-#     }
+    userinfo = {
+        "sub": "auth0|789",
+        "email": "full@example.com",
+        "name": "New Name",
+        "username": "fullnameuser"
+    }
 
-#     updated_user = plugin.get_oidc_user(userinfo)
-#     assert updated_user.fullname == "New Name"
+    updated_user = plugin.get_oidc_user(userinfo)
+    assert updated_user.fullname == "New Name"
 
 # def test_missing_sub_raises(plugin):
 #     userinfo = {
