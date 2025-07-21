@@ -1,52 +1,3 @@
-"""
-Tests for plugin.py.
-
-Tests are written using the pytest library (https://docs.pytest.org), and you
-should read the testing guidelines in the CKAN docs:
-https://docs.ckan.org/en/2.9/contributing/testing.html
-
-To write tests for your extension you should install the pytest-ckan package:
-
-    pip install pytest-ckan
-
-This will allow you to use CKAN specific fixtures on your tests.
-
-For instance, if your test involves database access you can use `clean_db` to
-reset the database:
-
-    import pytest
-
-    from ckan.tests import factories
-
-    @pytest.mark.usefixtures("clean_db")
-    def test_some_action():
-
-        dataset = factories.Dataset()
-
-        # ...
-
-For functional tests that involve requests to the application, you can use the
-`app` fixture:
-
-    from ckan.plugins import toolkit
-
-    def test_some_endpoint(app):
-
-        url = toolkit.url_for('myblueprint.some_endpoint')
-
-        response = app.get(url)
-
-        assert response.status_code == 200
-
-
-To temporary patch the CKAN configuration for the duration of a test you can use:
-
-    import pytest
-
-    @pytest.mark.ckan_config("ckanext.myext.some_key", "some_value")
-    def test_some_action():
-        pass
-"""
 import re
 import pytest
 from unittest import mock
@@ -70,7 +21,7 @@ def test_create_new_user(plugin, clean_session):
         "sub": "auth0|123",
         "email": "newuser@example.com",
         "name": "New User",
-        "username": "newuser"
+        "https://biocommons.org.au/username": "newuser"
     }
 
     user = plugin.get_oidc_user(userinfo)
@@ -92,7 +43,7 @@ def test_existing_user_backfill_auth0(plugin, clean_session):
         "sub": "auth0|456",
         "email": "existing@example.com",
         "name": "Existing User",
-        "username": "existinguser"
+        "https://biocommons.org.au/username": "existinguser"
     }
 
     updated_user = plugin.get_oidc_user(userinfo)
@@ -108,7 +59,7 @@ def test_existing_user_update_fullname(plugin, clean_session):
         "sub": "auth0|789",
         "email": "full@example.com",
         "name": "New Name",
-        "username": "fullnameuser"
+        "https://biocommons.org.au/username": "fullnameuser"
     }
 
     updated_user = plugin.get_oidc_user(userinfo)
@@ -117,7 +68,7 @@ def test_existing_user_update_fullname(plugin, clean_session):
 def test_missing_sub_raises(plugin):
     userinfo = {
         "email": "missing@example.com",
-        "username": "someuser"
+        "https://biocommons.org.au/username": "someuser"
     }
 
     with pytest.raises(tk.NotAuthorized, match="sub"):
@@ -131,13 +82,3 @@ def test_missing_username_raises(plugin):
 
     with pytest.raises(tk.NotAuthorized, match="username"):
         plugin.get_oidc_user(userinfo)
-
-# def test_invalid_username_raises(plugin):
-#     userinfo = {
-#         "sub": "auth0|999",
-#         "email": "badformat@example.com",
-#         "username": "Invalid!User"
-#     }
-
-#     with pytest.raises(tk.ValidationError, match="Invalid BPA username format"):
-#         plugin.get_oidc_user(userinfo)

@@ -16,13 +16,13 @@ class OidcPkceBpaPlugin(SingletonPlugin):
     def get_oidc_user(self, userinfo: dict) -> model.User:
         sub = userinfo.get("sub")
         if not sub:
-            raise tk.NotAuthorized("OIDC userinfo missing 'sub' claim.")
+            raise tk.NotAuthorized("'userinfo' missing 'sub' claim during get_oidc_user().")
 
-        # New: get BPA username directly from preferred_username in ID token
-        bpa_username = userinfo.get("username")
+        # Updated to match the namespaced claim set in the Auth0 action
+        bpa_username = userinfo.get("https://biocommons.org.au/username")
 
         if not bpa_username:
-            raise tk.NotAuthorized("Missing `preferred_username` in ID token")
+            raise tk.NotAuthorized("Missing 'username' in Auth0 ID token")
 
         user = model.User.get(bpa_username)
         if not user:
