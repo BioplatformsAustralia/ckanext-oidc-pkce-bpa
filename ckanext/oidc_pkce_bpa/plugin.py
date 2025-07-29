@@ -1,6 +1,7 @@
 import logging
 import re
 import ckan.plugins.toolkit as tk
+from . import config
 
 from ckan import model
 
@@ -19,9 +20,11 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             raise tk.NotAuthorized("'userinfo' missing 'sub' claim during get_oidc_user().")
 
         # Updated to match the namespaced claim set in the Auth0 action
-        bpa_username = userinfo.get("https://biocommons.org.au/username")
+        username_claim = config.username_claim()
+        bpa_username = userinfo.get(username_claim)
 
         if not bpa_username:
+            log.error("AMANDA-DEBUG - USERNAME_CLAIM: %s", username_claim)
             raise tk.NotAuthorized("Missing 'username' in Auth0 ID token")
 
         user = model.User.get(bpa_username)
