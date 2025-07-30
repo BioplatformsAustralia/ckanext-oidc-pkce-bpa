@@ -21,18 +21,17 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
         # Updated to match the namespaced claim set in the Auth0 action
         username_claim = config.username_claim()
-        bpa_username = userinfo.get(username_claim)
+        username = userinfo.get(username_claim)
 
-        if not bpa_username:
-            log.error("AMANDA-DEBUG - USERNAME_CLAIM: %s", username_claim)
+        if not username:
             raise tk.NotAuthorized("Missing 'username' in Auth0 ID token")
 
-        user = model.User.get(bpa_username)
+        user = model.User.get(username)
         if not user:
             user = model.User(
-                name=bpa_username,
+                name=username,
                 email=userinfo.get("email"),
-                fullname=userinfo.get("name", bpa_username),
+                fullname=userinfo.get("name", username),
                 password="",  # Not used
             )
             model.Session.add(user)
