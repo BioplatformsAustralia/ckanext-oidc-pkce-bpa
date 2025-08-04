@@ -27,8 +27,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
         self._ensure_auth0_id(user, sub)
         self._update_fullname_if_needed(user, userinfo)
-
-        self._store_org_metadata(user, userinfo)
+        self._store_org_metadata_and_sync(user, userinfo)
 
         model.Session.add(user)
         model.Session.commit()
@@ -70,13 +69,17 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             log.info("Updating fullname for '%s' to '%s'", user.name, updated_fullname)
             user.fullname = updated_fullname
 
-    def _store_org_metadata(self, user: model.User, userinfo: dict):
+    def _store_org_metadata_and_sync(self, user: model.User, userinfo: dict):
         context = {"user": user.name}
-        all_resources = utils.get_org_metadata_from_services(userinfo, context)
+        org_metadata = utils.get_org_metadata_from_services(userinfo, context)
 
-        if all_resources:
+        if org_metadata:
             user.plugin_extras["oidc_pkce"] = user.plugin_extras.get("oidc_pkce", {})
-            user.plugin_extras["oidc_pkce"]["org_requests"] = all_resources
-            log.info("Stored %d org access records for user '%s'", len(all_resources), user.name)
+            user.plugin_extras["oidc_pkce"]["org_request"] = org_metadata
 
-            session["ckanext:oidc-pkce-bpa:all_resources_ids"] = all_resources
+            # Send the org request metadata to be used in ckanext-ytp-request
+            session["ckanext:oidc-pkce-bpa:org_metadata"] = org_metadata
+            log.info("Stored %d org resource records for user '%s'", len(org_metadata), user.name)
+
+            # Sync any approved orgs
+            utils.sync_org_memberships_from_auth0(user.name, org_metadata, context)
