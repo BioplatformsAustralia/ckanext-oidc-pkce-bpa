@@ -1,23 +1,44 @@
-from unittest import mock
+import pytest
+from unittest.mock import patch
 
-from ckanext.oidc_pkce_bpa.config import (
-    username_claim,
-    CONFIG_USERNAME_CLAIM,
-    DEFAULT_USERNAME_CLAIM,
-)
+from ckanext.oidc_pkce_bpa import config
 
 
-def test_username_claim_from_config():
-    with mock.patch("ckan.plugins.toolkit.config.get") as mock_get:
-        mock_get.return_value = "custom_claim"
-        result = username_claim()
-        assert result == "custom_claim"
-        mock_get.assert_called_once_with(CONFIG_USERNAME_CLAIM, DEFAULT_USERNAME_CLAIM)
+def test_username_claim_default():
+    with patch("ckan.plugins.toolkit.config.get", return_value=config.DEFAULT_USERNAME_CLAIM):
+        result = config.username_claim()
+        assert result == "https://biocommons.org.au/username"
 
 
-def test_username_claim_uses_default():
-    with mock.patch("ckan.plugins.toolkit.config.get") as mock_get:
-        mock_get.return_value = DEFAULT_USERNAME_CLAIM
-        result = username_claim()
-        assert result == DEFAULT_USERNAME_CLAIM
-        mock_get.assert_called_once_with(CONFIG_USERNAME_CLAIM, DEFAULT_USERNAME_CLAIM)
+def test_username_claim_stripped_quotes():
+    with patch("ckan.plugins.toolkit.config.get", return_value='"https://biocommons.org.au/username"'):
+        result = config.username_claim()
+        assert result == "https://biocommons.org.au/username"
+
+    with patch("ckan.plugins.toolkit.config.get", return_value="'https://biocommons.org.au/username'"):
+        result = config.username_claim()
+        assert result == "https://biocommons.org.au/username"
+
+    with patch("ckan.plugins.toolkit.config.get", return_value="  https://biocommons.org.au/username  "):
+        result = config.username_claim()
+        assert result == "https://biocommons.org.au/username"
+
+
+def test_app_metadata_claim_default():
+    with patch("ckan.plugins.toolkit.config.get", return_value=config.DEFAULT_APP_METADATA_CLAIM):
+        result = config.app_metadata_claim()
+        assert result == "https://biocommons.org.au/app_metadata"
+
+
+def test_app_metadata_claim_stripped_quotes():
+    with patch("ckan.plugins.toolkit.config.get", return_value='"https://biocommons.org.au/app_metadata"'):
+        result = config.app_metadata_claim()
+        assert result == "https://biocommons.org.au/app_metadata"
+
+    with patch("ckan.plugins.toolkit.config.get", return_value="'https://biocommons.org.au/app_metadata'"):
+        result = config.app_metadata_claim()
+        assert result == "https://biocommons.org.au/app_metadata"
+
+    with patch("ckan.plugins.toolkit.config.get", return_value="  https://biocommons.org.au/app_metadata  "):
+        result = config.app_metadata_claim()
+        assert result == "https://biocommons.org.au/app_metadata"

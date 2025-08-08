@@ -1,7 +1,4 @@
-import re
 import pytest
-from unittest import mock
-
 from ckan import model
 import ckan.plugins.toolkit as tk
 
@@ -64,6 +61,43 @@ def test_existing_user_update_fullname(plugin, clean_session):
 
     updated_user = plugin.get_oidc_user(userinfo)
     assert updated_user.fullname == "New Name"
+
+
+def test_pending_resources_stored(plugin, clean_session):
+    userinfo = {
+        "sub": "auth0|999",
+        "email": "pending@example.com",
+        "name": "Pending User",
+        "https://biocommons.org.au/username": "pendinguser",
+        "https://biocommons.org.au/app_metadata": {
+            "services": [
+                {
+                    "name": "Bioplatforms Australia Data Portal",
+                    "id": "bpa",
+                    "resources": [
+                        {
+                            "id": "cipps",
+                            "name": "ARC for Innovations in Peptide and Protein Science (CIPPS)",
+                            "status": "pending",
+                            "initial_request_time": "2025-08-02T09:48:54.011361Z",
+                            "last_updated": "2025-08-02T09:48:54.011361Z",
+                            "updated_by": "system"
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+
+    user = plugin.get_oidc_user(userinfo)
+    pending = user.plugin_extras["oidc_pkce"]["pending_resources"]
+
+    assert isinstance(pending, list)
+    assert len(pending) == 1
+    assert pending[0]["id"] == "cipps"
+    assert pending[0]["status"] == "pending"
+    assert pending[0]["updated_by"] == "system"
+
 
 def test_missing_sub_raises(plugin):
     userinfo = {
