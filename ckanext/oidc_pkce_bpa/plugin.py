@@ -14,7 +14,10 @@ log = logging.getLogger(__name__)
 class OidcPkceBpaPlugin(SingletonPlugin):
     implements(IOidcPkce, inherit=True)
 
-    def get_oidc_user(self, userinfo: dict) -> model.User:
+    def get_oidc_user(self, userinfo: dict, access_token: str = None) -> model.User:
+        if access_token is None:
+            raise tk.NotAuthorized("Access token is required for this implementation.")
+        
         sub = userinfo.get("sub")
         if not sub:
             raise tk.NotAuthorized("'userinfo' missing 'sub' claim during get_oidc_user().")
@@ -27,7 +30,10 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
         self._ensure_auth0_id(user, sub)
         self._update_fullname_if_needed(user, userinfo)
-        self._store_org_metadata_and_sync(user, userinfo)
+
+        # Decode access token and pass to org metadata handler
+        decoded_access_token = utils.decode_access_token(access_token)
+        self._store_org_metadata_and_sync(user, decoded_access_token)
 
         model.Session.add(user)
         model.Session.commit()
@@ -69,9 +75,9 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             log.info("Updating fullname for '%s' to '%s'", user.name, updated_fullname)
             user.fullname = updated_fullname
 
-    def _store_org_metadata_and_sync(self, user: model.User, userinfo: dict):
+    def _store_org_metadata_and_sync(self, user: model.User, decoded_access_token: dict):
         context = {"user": user.name}
-        org_metadata = utils.get_org_metadata_from_services(userinfo, context)
+        org_metadata = utils.get_org_metadata_from_services(decoded_access_token, context)
 
         if org_metadata:
             user.plugin_extras["oidc_pkce"] = user.plugin_extras.get("oidc_pkce", {})

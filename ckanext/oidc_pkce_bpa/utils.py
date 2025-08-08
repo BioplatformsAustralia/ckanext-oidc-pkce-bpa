@@ -1,12 +1,23 @@
+import json
+import jwt
 import logging
+import requests
+
+from ckan.plugins.toolkit import config as ckan_config, NotAuthorized
 
 from datetime import datetime
+from jwt.algorithms import RSAAlgorithm
 from typing import Any, Dict, List
 
 import ckan.plugins.toolkit as tk
 from . import config
 
 log = logging.getLogger(__name__)
+
+API_AUDIENCE = "v82EoLw0NzR5GXcdHgLMVL9urGIbZQHH"
+AUTH0_DOMAIN = "login.test.biocommons.org.au"
+CLIENT_ID = ckan_config.get("ckanext.oidc-pkce.client_id")
+JWKS_URL = f'https://{AUTH0_DOMAIN}/.well-known/jwks.json'
 
 def format_date(date_str: str) -> str:
     """
@@ -17,6 +28,56 @@ def format_date(date_str: str) -> str:
         return datetime.fromisoformat(date_str.replace("Z", "")).date().isoformat()
     except Exception:
         return date_str  # fallback gracefully if format is unexpected
+
+def get_jwks():
+    """Fetch the JSON Web Key Set (JWKS) from Auth0 to validate JWTs."""
+    response = requests.get(JWKS_URL)
+    response.raise_for_status()
+    return response.json()
+
+
+def get_signing_key(token):
+    unverified_header = jwt.get_unverified_header(token)
+    jwks = get_jwks()
+    for key in jwks['keys']:
+        if key['kid'] == unverified_header['kid']:
+            return RSAAlgorithm.from_jwk(json.dumps(key))
+    raise Exception('Unable to find signing key for the token')
+
+def decode_access_token(token):
+    """
+    Decode and verify a JWT token using RS256 and JWKS.
+    """
+    if isinstance(token, dict):
+        log.info(" Token is already a dict — skipping JWT decode")
+        return token
+
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+
+    try:
+        # Decode without verification first to inspect
+        unverified = jwt.decode(token, options={"verify_signature": False, "verify_aud": False})
+    except Exception as e:
+        log.error(f" Failed to decode JWT without verification: {e}")
+        return {}
+
+    try:
+        key = get_signing_key(token)
+        log.info(" Successfully resolved signing key for JWT.")
+
+        decoded = jwt.decode(
+            token,
+            key=key,
+            algorithms=["RS256"],
+            audience=API_AUDIENCE,
+            issuer=f"https://{AUTH0_DOMAIN}/",
+        )
+        log.info(f"Verified decoded JWT claims: {decoded}")
+        return decoded
+    except Exception as e:
+        log.error(f"JWT decoding failed: {e}")
+        return {}
 
 def get_org_metadata_from_services(
     userinfo: Dict[str, Any], context: Dict[str, Any]
