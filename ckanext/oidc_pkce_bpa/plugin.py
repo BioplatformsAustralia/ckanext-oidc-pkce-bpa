@@ -11,47 +11,48 @@ from ckanext.oidc_pkce.interfaces import IOidcPkce
 
 log = logging.getLogger(__name__)
 
+
 class OidcPkceBpaPlugin(SingletonPlugin):
     implements(IOidcPkce, inherit=True)
 
-    def get_oidc_user(self, userinfo: dict, access_token: str = None) -> model.User:
-        if access_token is None:
-            raise tk.NotAuthorized("Access token is required for this implementation.")
-        
+    def get_oidc_user(self, userinfo: dict) -> model.User:
+        """
+        Upstream calls this with only `userinfo`. We fetch app_metadata via
+        the Auth0 Management API using the user's `sub` and then normalise +
+        stash it for UI (and optionally sync into ytp-request).
+        """
         sub = userinfo.get("sub")
         if not sub:
             raise tk.NotAuthorized("'userinfo' missing 'sub' claim during get_oidc_user().")
 
-        username = self._extract_username(userinfo)
+        # Resolve or create the CKAN user
+        username = utils.extract_username(userinfo)
         user = model.User.get(username)
-
         if not user:
             user = self._create_new_user(userinfo, username)
 
+        # Keep basic identity fields aligned
         self._ensure_auth0_id(user, sub)
         self._update_fullname_if_needed(user, userinfo)
 
-        # Decode access token and pass to org metadata handler
-        decoded_access_token = utils.decode_access_token(access_token)
-        self._store_org_metadata_and_sync(user, decoded_access_token)
+        # --- Fetch app_metadata via Auth0 Management API (no access token needed) ---
+        app_metadata = utils.get_user_app_metadata(sub)
+
+        if app_metadata:
+            self._store_org_metadata_and_sync(user, app_metadata)
+        else:
+            log.info("No app_metadata for sub '%s' from Auth0 Management API.", sub)
 
         model.Session.add(user)
         model.Session.commit()
         return user
-
-    def _extract_username(self, userinfo: dict) -> str:
-        username_claim = config.username_claim()
-        username = userinfo.get(username_claim)
-        if not username:
-            raise tk.NotAuthorized("Missing 'username' in Auth0 ID token")
-        return username
 
     def _create_new_user(self, userinfo: dict, username: str) -> model.User:
         user = model.User(
             name=username,
             email=userinfo.get("email"),
             fullname=userinfo.get("name", username),
-            password="",  # Not used
+            password="",  # Not used (OIDC-managed)
         )
         model.Session.add(user)
         model.Session.commit()
@@ -75,17 +76,25 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             log.info("Updating fullname for '%s' to '%s'", user.name, updated_fullname)
             user.fullname = updated_fullname
 
-    def _store_org_metadata_and_sync(self, user: model.User, decoded_access_token: dict):
+    def _store_org_metadata_and_sync(self, user: model.User, claims_or_app_metadata: dict):
+        """
+        Accepts raw app_metadata and:
+          - stores for UI (My Memberships) in session
+          - optionally mirrors pending into ckanext-ytp-request
+        """
         context = {"user": user.name}
-        org_metadata = utils.get_org_metadata_from_services(decoded_access_token, context)
 
-        if org_metadata:
-            user.plugin_extras["oidc_pkce"] = user.plugin_extras.get("oidc_pkce", {})
-            user.plugin_extras["oidc_pkce"]["org_request"] = org_metadata
+        org_metadata = utils.get_org_metadata_from_services(claims_or_app_metadata, context)
+        if not org_metadata:
+            return
 
-            # Send the org request metadata to be used in ckanext-ytp-request
-            session["ckanext:oidc-pkce-bpa:org_metadata"] = org_metadata
-            log.info("Stored %d org resource records for user '%s'", len(org_metadata), user.name)
+        # Persist on the user for audit/inspection
+        user.plugin_extras["oidc_pkce"] = user.plugin_extras.get("oidc_pkce", {})
+        user.plugin_extras["oidc_pkce"]["org_request"] = org_metadata
 
-            # Sync any approved orgs
-            utils.sync_org_memberships_from_auth0(user.name, org_metadata, context)
+        # Surface to the UI via session for the My Memberships page
+        session["ckanext:oidc-pkce-bpa:org_metadata"] = org_metadata
+        log.info("Stored %d org resource records for user '%s'", len(org_metadata), user.name)
+
+        # Optionally create pending requests in ytp-request if not present
+        utils.sync_org_memberships_from_auth0(user.name, org_metadata, context)

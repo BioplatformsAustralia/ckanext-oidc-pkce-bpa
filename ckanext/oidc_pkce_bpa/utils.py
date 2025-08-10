@@ -1,4 +1,5 @@
 import json
+import time
 import jwt
 import logging
 import requests
@@ -7,17 +8,30 @@ from ckan.plugins.toolkit import config as ckan_config, NotAuthorized
 
 from datetime import datetime
 from jwt.algorithms import RSAAlgorithm
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import ckan.plugins.toolkit as tk
 from . import config
 
 log = logging.getLogger(__name__)
 
-API_AUDIENCE = "v82EoLw0NzR5GXcdHgLMVL9urGIbZQHH"
-AUTH0_DOMAIN = "login.test.biocommons.org.au"
-CLIENT_ID = ckan_config.get("ckanext.oidc-pkce.client_id")
-JWKS_URL = f'https://{AUTH0_DOMAIN}/.well-known/jwks.json'
+API_AUDIENCE = ckan_config.get("ckanext.oidc_pkce_bpa.api_audience")
+AUTH0_DOMAIN = ckan_config.get("ckanext.oidc_pkce_bpa.auth0_domain")
+JWKS_URL = f"https://{AUTH0_DOMAIN}/.well-known/jwks.json"
+
+MGMT_CLIENT_ID = ckan_config.get("ckanext.oidc_pkce.client_id")
+MGMT_CLIENT_SECRET = ckan_config.get("ckanext.oidc_pkce.client_secret")
+
+# very small in-proc cache for the M2M token
+_MGMT_CACHE: Dict[str, Any] = {"token": None, "exp": 0}
+
+def extract_username(userinfo: dict) -> str:
+    username_claim = config.username_claim()
+    username = userinfo.get(username_claim) or userinfo.get("nickname")
+    if not username:
+        raise tk.NotAuthorized("Missing 'username' in Auth0 ID token")
+    return username
+
 
 def format_date(date_str: str) -> str:
     """
@@ -29,24 +43,27 @@ def format_date(date_str: str) -> str:
     except Exception:
         return date_str  # fallback gracefully if format is unexpected
 
-def get_jwks():
+
+def get_jwks() -> Dict[str, Any]:
     """Fetch the JSON Web Key Set (JWKS) from Auth0 to validate JWTs."""
-    response = requests.get(JWKS_URL)
+    response = requests.get(JWKS_URL, timeout=10)
     response.raise_for_status()
     return response.json()
 
 
-def get_signing_key(token):
+def get_signing_key(token: str):
     unverified_header = jwt.get_unverified_header(token)
     jwks = get_jwks()
-    for key in jwks['keys']:
-        if key['kid'] == unverified_header['kid']:
+    for key in jwks.get("keys", []):
+        if key.get("kid") == unverified_header.get("kid"):
             return RSAAlgorithm.from_jwk(json.dumps(key))
-    raise Exception('Unable to find signing key for the token')
+    raise Exception("Unable to find signing key for the token")
 
-def decode_access_token(token):
+
+def decode_access_token(token: Any) -> Dict[str, Any]:
     """
     Decode and verify a JWT token using RS256 and JWKS.
+    Returns {} on failure.
     """
     if isinstance(token, dict):
         log.info(" Token is already a dict — skipping JWT decode")
@@ -57,7 +74,7 @@ def decode_access_token(token):
 
     try:
         # Decode without verification first to inspect
-        unverified = jwt.decode(token, options={"verify_signature": False, "verify_aud": False})
+        _ = jwt.decode(token, options={"verify_signature": False, "verify_aud": False})
     except Exception as e:
         log.error(f" Failed to decode JWT without verification: {e}")
         return {}
@@ -73,28 +90,84 @@ def decode_access_token(token):
             audience=API_AUDIENCE,
             issuer=f"https://{AUTH0_DOMAIN}/",
         )
-        log.info(f"Verified decoded JWT claims: {decoded}")
+        log.info(" Verified decoded JWT claims")
         return decoded
     except Exception as e:
         log.error(f"JWT decoding failed: {e}")
         return {}
 
-def get_org_metadata_from_services(
-    userinfo: Dict[str, Any], context: Dict[str, Any]
-) -> List[Dict[str, str]]:
+
+def _now() -> int:
+    return int(time.time())
+
+
+def get_management_token() -> Optional[str]:
     """
-    Extract and validate all org access metadata from ID token's app_metadata.services[].resources[].
-
-    Returns a list of dicts with id, name, status, request_date, handling_date, handler, etc.
+    Client-credentials grant for Auth0 Management API.
+    Caches token briefly to avoid rate limits.
     """
-    app_metadata = userinfo.get(config.app_metadata_claim(), {})
+    if not (MGMT_CLIENT_ID and MGMT_CLIENT_SECRET and API_AUDIENCE):
+        log.warning("Management API credentials not configured; skipping")
+        return None
 
-    services = app_metadata.get("services", [])
+    tok = _MGMT_CACHE.get("token")
+    exp = _MGMT_CACHE.get("exp", 0)
+    if tok and _now() < exp:
+        return tok
 
-    org_entries = []
+    try:
+        r = requests.post(
+            f"https://{AUTH0_DOMAIN}/oauth/token",
+            json={
+                "client_id": MGMT_CLIENT_ID,
+                "client_secret": MGMT_CLIENT_SECRET,
+                "audience": API_AUDIENCE,
+                "grant_type": "client_credentials",
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        tok = data["access_token"]
+        # Default lifetime is large; keep a conservative 10-minute cache
+        _MGMT_CACHE["token"] = tok
+        _MGMT_CACHE["exp"] = _now() + 600
+        return tok
+    except Exception as e:
+        log.error(f"Failed to obtain Management API token: {e}")
+        return None
 
-    for service in services:
-        for resource in service.get("resources", []):
+
+def get_user_app_metadata(sub: str) -> Dict[str, Any]:
+    """
+    Fetch app_metadata via Auth0 Management API.
+    """
+    token = get_management_token()
+    if not token:
+        return {}
+
+    try:
+        r = requests.get(
+            f"https://{AUTH0_DOMAIN}/api/v2/users/{sub}",
+            params={"fields": "app_metadata,user_id"},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return r.json().get("app_metadata") or {}
+    except Exception as e:
+        log.error(f"Failed to fetch user app_metadata via Management API: {e}")
+        return {}
+
+
+def _services_to_org_entries(services: List[Dict[str, Any]], context: Dict[str, Any]) -> List[Dict[str, str]]:
+    """
+    Convert services[].resources[] to the flattened org entries used by UI/ytp-request.
+    Validates that the CKAN org exists before including it.
+    """
+    org_entries: List[Dict[str, str]] = []
+    for service in services or []:
+        for resource in service.get("resources", []) or []:
             org_id = resource.get("id")
             org_name = resource.get("name")
             status = resource.get("status")
@@ -116,8 +189,31 @@ def get_org_metadata_from_services(
                 "handling_date": format_date(resource.get("last_updated")),
                 "handler": resource.get("updated_by"),
             })
-
     return org_entries
+
+
+def get_org_metadata_from_services(
+    app_metadata: Dict[str, Any], context: Dict[str, Any]
+) -> List[Dict[str, str]]:
+    """
+    Extract and validate org access metadata.
+
+    Accepts a raw app_metadata dict (already extracted).
+
+    Returns a list of dicts with id, name, status, request_date, handling_date, handler, etc.
+    """
+    claim_key = config.app_metadata_claim()  # e.g. "https://biocommons.org.au/app_metadata"
+
+    # If we were passed decoded access-token claims, pull the namespaced claim.
+    if isinstance(app_metadata, dict) and claim_key in (app_metadata or {}):
+        app_metadata = (app_metadata or {}).get(claim_key, {}) or {}
+    else:
+        # Otherwise, assume we were passed the raw app_metadata dict itself.
+        app_metadata = app_metadata or {}
+
+    services = (app_metadata or {}).get("services", [])
+    return _services_to_org_entries(services, context)
+
 
 def sync_org_memberships_from_auth0(
     user_name: str,
@@ -168,3 +264,4 @@ def sync_org_memberships_from_auth0(
             log.warning(f"Validation error creating membership request for '{org_id}': {e}")
         except Exception as e:
             log.error(f"Failed to create membership request for '{user_name}' in '{org_id}': {e}")
+
