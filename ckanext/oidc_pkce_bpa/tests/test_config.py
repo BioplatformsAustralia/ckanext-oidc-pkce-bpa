@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import patch
 
 from ckanext.oidc_pkce_bpa import config

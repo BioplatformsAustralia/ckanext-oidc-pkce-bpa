@@ -1,7 +1,7 @@
 import pytest
-from unittest.mock import patch
 from ckan import model
 import ckan.plugins.toolkit as tk
+from unittest.mock import patch
 
 from ckanext.oidc_pkce_bpa.plugin import OidcPkceBpaPlugin
 
@@ -93,8 +93,14 @@ def test_pending_resources_stored(plugin, clean_session):
             }
         ]
     }
-    # Ensure plugin uses our stubbed app_metadata and doesn't hit external services.
-    with patch("ckanext.oidc_pkce_bpa.utils.get_user_app_metadata", return_value=app_metadata), \
+
+    def action(name):
+        if name == "organization_show":
+            return lambda ctx, data: {"name": data["id"]}
+        raise AssertionError(f"Unexpected action requested: {name}")
+
+    with patch("ckan.plugins.toolkit.get_action", side_effect=action), \
+         patch("ckanext.oidc_pkce_bpa.utils.get_user_app_metadata", return_value=app_metadata), \
          patch("ckanext.oidc_pkce_bpa.utils.sync_org_memberships_from_auth0") as mock_sync:
         user = plugin.get_oidc_user(userinfo)
 

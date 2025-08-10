@@ -1,6 +1,5 @@
-import json
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from ckanext.oidc_pkce_bpa import utils
 import ckan.plugins.toolkit as tk
 
@@ -34,14 +33,30 @@ def test_get_jwks(mock_get):
     assert result == {"keys": []}
     mock_get.assert_called_once()
 
+@pytest.mark.skipif(utils.RSAAlgorithm is None, reason="RSAAlgorithm not available in this PyJWT")
 @patch("ckanext.oidc_pkce_bpa.utils.get_jwks")
 @patch("ckanext.oidc_pkce_bpa.utils.jwt.get_unverified_header")
-@patch("ckanext.oidc_pkce_bpa.utils.RSAAlgorithm.from_jwk")
-def test_get_signing_key_found(mock_from_jwk, mock_get_header, mock_get_jwks):
+def test_get_signing_key_found(mock_get_header, mock_get_jwks, monkeypatch):
     mock_get_header.return_value = {"kid": "123"}
     mock_get_jwks.return_value = {"keys": [{"kid": "123"}]}
-    mock_from_jwk.return_value = "key"
-    assert utils.get_signing_key("token") == "key"
+    # Patch RSAAlgorithm.from_jwk only if RSAAlgorithm exists
+    monkeypatch.setattr(utils.RSAAlgorithm, "from_jwk", staticmethod(lambda s: "legacy-key"))
+    assert utils.get_signing_key("token") == "legacy-key"
+
+@pytest.mark.skipif(utils.PyJWKClient is None, reason="PyJWKClient not available in this PyJWT")
+def test_get_signing_key_pyjwkclient(monkeypatch):
+    # Force the new path
+    monkeypatch.setattr(utils, "RSAAlgorithm", None, raising=False)
+
+    class MockJWKClient:
+        def __init__(self, url): pass
+        def get_signing_key_from_jwt(self, token):
+            class K:
+                key = "pyjwk-key"
+            return K()
+
+    monkeypatch.setattr(utils, "PyJWKClient", MockJWKClient, raising=False)
+    assert utils.get_signing_key("token") == "pyjwk-key"
 
 @patch("ckanext.oidc_pkce_bpa.utils.get_signing_key")
 @patch("ckanext.oidc_pkce_bpa.utils.jwt.decode")
