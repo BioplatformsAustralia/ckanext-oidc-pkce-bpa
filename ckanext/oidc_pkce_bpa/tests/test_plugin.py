@@ -100,6 +100,7 @@ def test_pending_resources_stored(plugin, clean_session):
         raise AssertionError(f"Unexpected action requested: {name}")
 
     with patch("ckan.plugins.toolkit.get_action", side_effect=action), \
+         patch("ckanext.oidc_pkce_bpa.plugin.session", {}), \
          patch("ckanext.oidc_pkce_bpa.utils.get_user_app_metadata", return_value=app_metadata), \
          patch("ckanext.oidc_pkce_bpa.utils.sync_org_memberships_from_auth0") as mock_sync:
         user = plugin.get_oidc_user(userinfo)
