@@ -7,8 +7,17 @@ import requests
 from ckan.plugins.toolkit import config as ckan_config, NotAuthorized
 
 from datetime import datetime
-from jwt.algorithms import RSAAlgorithm
 from typing import Any, Dict, List, Optional
+
+try:
+    from jwt.algorithms import RSAAlgorithm  # PyJWT < 2.10
+except ImportError:
+    RSAAlgorithm = None
+
+try:
+    from jwt import PyJWKClient  # PyJWT >= 2.0
+except ImportError:
+    PyJWKClient = None
 
 import ckan.plugins.toolkit as tk
 from . import config
@@ -52,12 +61,25 @@ def get_jwks() -> Dict[str, Any]:
 
 
 def get_signing_key(token: str):
-    unverified_header = jwt.get_unverified_header(token)
-    jwks = get_jwks()
-    for key in jwks.get("keys", []):
-        if key.get("kid") == unverified_header.get("kid"):
-            return RSAAlgorithm.from_jwk(json.dumps(key))
-    raise Exception("Unable to find signing key for the token")
+    """
+    Return signing key from Auth0's JWKS.
+    Supports both old (RSAAlgorithm) and new (PyJWKClient) PyJWT versions.
+    """
+    # Old PyJWT path
+    if RSAAlgorithm is not None:
+        unverified_header = jwt.get_unverified_header(token)
+        jwks = get_jwks()
+        for key in jwks.get("keys", []):
+            if key.get("kid") == unverified_header.get("kid"):
+                return RSAAlgorithm.from_jwk(json.dumps(key))
+        raise Exception("Unable to find signing key for the token")
+
+    # New PyJWT path
+    if PyJWKClient is not None:
+        jwk_client = PyJWKClient(JWKS_URL)
+        return jwk_client.get_signing_key_from_jwt(token).key
+
+    raise ImportError("Neither RSAAlgorithm nor PyJWKClient available; unsupported PyJWT version")
 
 
 def decode_access_token(token: Any) -> Dict[str, Any]:

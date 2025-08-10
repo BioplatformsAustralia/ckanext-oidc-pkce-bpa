@@ -36,6 +36,7 @@ jobs:
         pip install -r requirements.txt
         pip install -r dev-requirements.txt
         pip install -e .
+        pip install "PyJWT>=2.0,<2.10"
     - name: Setup extension
       # Extra initialization steps
       run: |
