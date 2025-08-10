@@ -111,7 +111,7 @@ def test_pending_resources_stored(plugin, clean_session):
     assert len(org_request) == 1
     assert org_request[0]["id"] == "cipps"
     assert org_request[0]["status"] == "pending"
-    assert org_request[0]["updated_by"] == "system"
+    assert org_request[0]["handler"] == "system"
     mock_sync.assert_called_once()
 
 
