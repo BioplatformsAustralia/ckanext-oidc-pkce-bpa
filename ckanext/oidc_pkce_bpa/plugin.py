@@ -1,6 +1,6 @@
 import logging
 import ckan.plugins.toolkit as tk
-from . import config, utils
+from . import utils
 
 from ckan import model
 

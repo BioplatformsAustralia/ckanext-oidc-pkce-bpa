@@ -20,13 +20,15 @@ except ImportError:
     PyJWKClient = None
 
 import ckan.plugins.toolkit as tk
-from . import config
 
 log = logging.getLogger(__name__)
 
 API_AUDIENCE = ckan_config.get("ckanext.oidc_pkce_bpa.api_audience")
 AUTH0_DOMAIN = ckan_config.get("ckanext.oidc_pkce_bpa.auth0_domain")
 JWKS_URL = f"https://{AUTH0_DOMAIN}/.well-known/jwks.json"
+
+APP_METADATA_CLAIM = ckan_config.config.get("ckanext.oidc_pkce_bpa.app_metadata_claim")
+USERNAME_CLAIM = ckan_config.config.get("ckanext.oidc_pkce_bpa.username_claim")
 
 MGMT_CLIENT_ID = ckan_config.get("ckanext.oidc_pkce.client_id")
 MGMT_CLIENT_SECRET = ckan_config.get("ckanext.oidc_pkce.client_secret")
@@ -35,8 +37,7 @@ MGMT_CLIENT_SECRET = ckan_config.get("ckanext.oidc_pkce.client_secret")
 _MGMT_CACHE: Dict[str, Any] = {"token": None, "exp": 0}
 
 def extract_username(userinfo: dict) -> str:
-    username_claim = config.username_claim()
-    username = userinfo.get(username_claim) or userinfo.get("nickname")
+    username = userinfo.get(USERNAME_CLAIM) or userinfo.get("nickname")
     if not username:
         raise tk.NotAuthorized("Missing 'username' in Auth0 ID token")
     return username
@@ -224,11 +225,9 @@ def get_org_metadata_from_services(
 
     Returns a list of dicts with id, name, status, request_date, handling_date, handler, etc.
     """
-    claim_key = config.app_metadata_claim()  # e.g. "https://biocommons.org.au/app_metadata"
-
     # If we were passed decoded access-token claims, pull the namespaced claim.
-    if isinstance(app_metadata, dict) and claim_key in (app_metadata or {}):
-        app_metadata = (app_metadata or {}).get(claim_key, {}) or {}
+    if isinstance(app_metadata, dict) and APP_METADATA_CLAIM in (app_metadata or {}):
+        app_metadata = (app_metadata or {}).get(APP_METADATA_CLAIM, {}) or {}
     else:
         # Otherwise, assume we were passed the raw app_metadata dict itself.
         app_metadata = app_metadata or {}
@@ -263,7 +262,7 @@ def sync_org_memberships_from_auth0(
             continue
 
         try:
-            existing = tk.get_action("ytp_request_list")(context, {
+            existing = tk.get_action("member_requests_list")(context, {
                 "object_id": org_id,
                 "object_type": "organization",
                 "type": "membership",
@@ -274,7 +273,7 @@ def sync_org_memberships_from_auth0(
                 log.info(f"Pending request already exists for user '{user_name}' in org '{org_id}', skipping.")
                 continue
 
-            tk.get_action("ytp_request_create")(context, {
+            tk.get_action("member_request_create")(context, {
                 "object_id": org_id,
                 "object_type": "organization",
                 "type": "membership",
