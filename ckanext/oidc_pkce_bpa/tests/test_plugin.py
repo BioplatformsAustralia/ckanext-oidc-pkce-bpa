@@ -8,15 +8,19 @@ from ckanext.oidc_pkce_bpa.plugin import OidcPkceBpaPlugin
 
 @pytest.fixture
 def plugin():
+    """Fixture to initialize the plugin."""
     return OidcPkceBpaPlugin()
+
 
 @pytest.fixture
 def clean_session():
+    """Fixture to clean up the database session after each test."""
     yield
     model.Session.remove()
 
 
 def test_create_new_user(plugin, clean_session):
+    """Test creating a new user with OIDC user info."""
     userinfo = {
         "sub": "auth0|123",
         "email": "newuser@example.com",
@@ -33,6 +37,7 @@ def test_create_new_user(plugin, clean_session):
 
 
 def test_existing_user_backfill_auth0(plugin, clean_session):
+    """Test updating an existing user with missing Auth0 ID."""
     user = model.User(name="existinguser", email="existing@example.com", fullname="Existing User", password="")
     model.Session.add(user)
     model.Session.commit()
@@ -52,6 +57,7 @@ def test_existing_user_backfill_auth0(plugin, clean_session):
 
 
 def test_existing_user_update_fullname(plugin, clean_session):
+    """Test updating the fullname of an existing user."""
     user = model.User(name="fullnameuser", email="full@example.com", fullname="Old Name", password="")
     user.plugin_extras = {"oidc_pkce": {"auth0_id": "auth0|789"}}
     model.Session.add(user)
@@ -69,6 +75,7 @@ def test_existing_user_update_fullname(plugin, clean_session):
 
 
 def test_pending_resources_stored(plugin, clean_session):
+    """Test storing pending resources in the user's plugin extras."""
     userinfo = {
         "sub": "auth0|999",
         "email": "pending@example.com",
@@ -94,12 +101,12 @@ def test_pending_resources_stored(plugin, clean_session):
         ]
     }
 
-    def action(name):
+    def mock_action(name):
         if name == "organization_show":
             return lambda ctx, data: {"name": data["id"]}
         raise AssertionError(f"Unexpected action requested: {name}")
 
-    with patch("ckan.plugins.toolkit.get_action", side_effect=action), \
+    with patch("ckan.plugins.toolkit.get_action", side_effect=mock_action), \
          patch("ckanext.oidc_pkce_bpa.plugin.session", {}), \
          patch("ckanext.oidc_pkce_bpa.utils.get_user_app_metadata", return_value=app_metadata), \
          patch("ckanext.oidc_pkce_bpa.utils.sync_org_memberships_from_auth0") as mock_sync:
@@ -116,6 +123,7 @@ def test_pending_resources_stored(plugin, clean_session):
 
 
 def test_missing_sub_raises(plugin):
+    """Test that missing 'sub' in userinfo raises NotAuthorized."""
     userinfo = {
         "email": "missing@example.com",
         "https://biocommons.org.au/username": "someuser"
@@ -126,6 +134,7 @@ def test_missing_sub_raises(plugin):
 
 
 def test_missing_username_raises(plugin):
+    """Test that missing username in userinfo raises NotAuthorized."""
     userinfo = {
         "sub": "auth0|999",
         "email": "missing@example.com"
