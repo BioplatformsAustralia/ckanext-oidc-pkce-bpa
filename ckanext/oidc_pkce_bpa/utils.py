@@ -27,14 +27,9 @@ API_AUDIENCE = ckan_config.get("ckanext.oidc_pkce_bpa.api_audience")
 AUTH0_DOMAIN = ckan_config.get("ckanext.oidc_pkce_bpa.auth0_domain")
 JWKS_URL = f"https://{AUTH0_DOMAIN}/.well-known/jwks.json"
 
-APP_METADATA_CLAIM = ckan_config.config.get("ckanext.oidc_pkce_bpa.app_metadata_claim")
-USERNAME_CLAIM = ckan_config.config.get("ckanext.oidc_pkce_bpa.username_claim")
+APP_METADATA_CLAIM = ckan_config.get("ckanext.oidc_pkce_bpa.app_metadata_claim")
+USERNAME_CLAIM = ckan_config.get("ckanext.oidc_pkce_bpa.username_claim")
 
-MGMT_CLIENT_ID = ckan_config.get("ckanext.oidc_pkce.client_id")
-MGMT_CLIENT_SECRET = ckan_config.get("ckanext.oidc_pkce.client_secret")
-
-# very small in-proc cache for the M2M token
-_MGMT_CACHE: Dict[str, Any] = {"token": None, "exp": 0}
 
 def extract_username(userinfo: dict) -> str:
     username = userinfo.get(USERNAME_CLAIM) or userinfo.get("nickname")
@@ -105,7 +100,6 @@ def decode_access_token(token: Any) -> Dict[str, Any]:
     try:
         key = get_signing_key(token)
         log.info(" Successfully resolved signing key for JWT.")
-
         decoded = jwt.decode(
             token,
             key=key,
@@ -117,69 +111,6 @@ def decode_access_token(token: Any) -> Dict[str, Any]:
         return decoded
     except Exception as e:
         log.error(f"JWT decoding failed: {e}")
-        return {}
-
-
-def _now() -> int:
-    return int(time.time())
-
-
-def get_management_token() -> Optional[str]:
-    """
-    Client-credentials grant for Auth0 Management API.
-    Caches token briefly to avoid rate limits.
-    """
-    if not (MGMT_CLIENT_ID and MGMT_CLIENT_SECRET and API_AUDIENCE):
-        log.warning("Management API credentials not configured; skipping")
-        return None
-
-    tok = _MGMT_CACHE.get("token")
-    exp = _MGMT_CACHE.get("exp", 0)
-    if tok and _now() < exp:
-        return tok
-
-    try:
-        r = requests.post(
-            f"https://{AUTH0_DOMAIN}/oauth/token",
-            json={
-                "client_id": MGMT_CLIENT_ID,
-                "client_secret": MGMT_CLIENT_SECRET,
-                "audience": API_AUDIENCE,
-                "grant_type": "client_credentials",
-            },
-            timeout=10,
-        )
-        r.raise_for_status()
-        data = r.json()
-        tok = data["access_token"]
-        # Default lifetime is large; keep a conservative 10-minute cache
-        _MGMT_CACHE["token"] = tok
-        _MGMT_CACHE["exp"] = _now() + 600
-        return tok
-    except Exception as e:
-        log.error(f"Failed to obtain Management API token: {e}")
-        return None
-
-
-def get_user_app_metadata(sub: str) -> Dict[str, Any]:
-    """
-    Fetch app_metadata via Auth0 Management API.
-    """
-    token = get_management_token()
-    if not token:
-        return {}
-
-    try:
-        r = requests.get(
-            f"https://{AUTH0_DOMAIN}/api/v2/users/{sub}",
-            params={"fields": "app_metadata,user_id"},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
-        )
-        r.raise_for_status()
-        return r.json().get("app_metadata") or {}
-    except Exception as e:
-        log.error(f"Failed to fetch user app_metadata via Management API: {e}")
         return {}
 
 
@@ -286,3 +217,35 @@ def sync_org_memberships_from_auth0(
         except Exception as e:
             log.error(f"Failed to create membership request for '{user_name}' in '{org_id}': {e}")
 
+
+def get_user_app_metadata(access_token: Any) -> Dict[str, Any]:
+    """
+    Strictly extract Auth0 app_metadata from a user's access token.
+    """
+    if not access_token:
+        raise tk.NotAuthorized("Access token is required but missing")
+
+    # Allow callers to pass pre-decoded claims dict (defensive convenience)
+    if isinstance(access_token, dict):
+        claims = access_token
+    else:
+        claims = decode_access_token(access_token)
+
+    if not claims:
+        raise tk.ValidationError("Unable to decode or verify access token")
+
+    if not APP_METADATA_CLAIM:
+        raise tk.ValidationError(
+            "CKANEXT_OIDC_PKCE_BPA_APP_METADATA_CLAIM not set - please check the ckan.ini file"
+        )
+
+    app_md = claims.get(APP_METADATA_CLAIM)
+    
+    if not app_md:
+        raise tk.ValidationError("No 'app_metadata' claim found in access token")
+
+    # Ensure dict
+    if not isinstance(app_md, dict):
+        raise tk.ValidationError("app_metadata claim is not an object")
+
+    return app_md

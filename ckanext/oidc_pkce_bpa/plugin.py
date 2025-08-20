@@ -25,6 +25,11 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         if not sub:
             raise tk.NotAuthorized("'userinfo' missing 'sub' claim during get_oidc_user().")
 
+        access_token = userinfo.get("access_token")
+
+        if not access_token:
+            raise tk.NotAuthorized("'userinfo' missing 'access_token' claim during get_oidc_user().")
+
         # Resolve or create the CKAN user
         username = utils.extract_username(userinfo)
         user = model.User.get(username)
@@ -35,13 +40,13 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         self._ensure_auth0_id(user, sub)
         self._update_fullname_if_needed(user, userinfo)
 
-        # --- Fetch app_metadata via Auth0 Management API (no access token needed) ---
-        app_metadata = utils.get_user_app_metadata(sub)
+        # Fetch app_metadata via access token
+        app_metadata = utils.get_user_app_metadata(access_token)
 
         if app_metadata:
             self._store_org_metadata_and_sync(user, app_metadata)
         else:
-            log.info("No app_metadata for sub '%s' from Auth0 Management API.", sub)
+            log.info("No app_metadata available for user: '%s'", username)
 
         model.Session.add(user)
         model.Session.commit()
@@ -80,7 +85,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         """
         Accepts raw app_metadata and:
           - stores for UI (My Memberships) in session
-          - optionally mirrors pending into ckanext-ytp-request
+          - mirrors pending requests into ckanext-ytp-request
         """
         context = {"user": user.name}
 
@@ -96,5 +101,5 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         session["ckanext:oidc-pkce-bpa:org_metadata"] = org_metadata
         log.info("Stored %d org resource records for user '%s'", len(org_metadata), user.name)
 
-        # Optionally create pending requests in ytp-request if not present
+        # create pending requests in ytp-request if not present
         utils.sync_org_memberships_from_auth0(user.name, org_metadata, context)
