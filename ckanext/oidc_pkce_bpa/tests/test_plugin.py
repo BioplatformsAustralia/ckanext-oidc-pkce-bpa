@@ -25,10 +25,12 @@ def test_create_new_user(plugin, clean_session):
         "sub": "auth0|123",
         "email": "newuser@example.com",
         "name": "New User",
-        "https://biocommons.org.au/username": "newuser"
+        "https://biocommons.org.au/username": "newuser",
+        "access_token": "test-access-token"
     }
 
-    user = plugin.get_oidc_user(userinfo)
+    with patch("ckanext.oidc_pkce_bpa.utils.get_user_app_metadata", return_value={}):
+        user = plugin.get_oidc_user(userinfo)
 
     assert user.name == "newuser"
     assert user.email == "newuser@example.com"
@@ -49,10 +51,13 @@ def test_existing_user_backfill_auth0(plugin, clean_session):
         "sub": "auth0|456",
         "email": "existing@example.com",
         "name": "Existing User",
-        "https://biocommons.org.au/username": "existinguser"
+        "https://biocommons.org.au/username": "existinguser",
+        "access_token": "test-access-token"
     }
 
-    updated_user = plugin.get_oidc_user(userinfo)
+    with patch("ckanext.oidc_pkce_bpa.utils.get_user_app_metadata", return_value={}):
+        updated_user = plugin.get_oidc_user(userinfo)
+
     assert updated_user.plugin_extras["oidc_pkce"]["auth0_id"] == "auth0|456"
 
 
@@ -67,10 +72,13 @@ def test_existing_user_update_fullname(plugin, clean_session):
         "sub": "auth0|789",
         "email": "full@example.com",
         "name": "New Name",
-        "https://biocommons.org.au/username": "fullnameuser"
+        "https://biocommons.org.au/username": "fullnameuser",
+        "access_token": "test-access-token"
     }
 
-    updated_user = plugin.get_oidc_user(userinfo)
+    with patch("ckanext.oidc_pkce_bpa.utils.get_user_app_metadata", return_value={}):
+        updated_user = plugin.get_oidc_user(userinfo)
+
     assert updated_user.fullname == "New Name"
 
 
@@ -137,8 +145,9 @@ def test_missing_username_raises(plugin):
     """Test that missing username in userinfo raises NotAuthorized."""
     userinfo = {
         "sub": "auth0|999",
-        "email": "missing@example.com"
+        "email": "missing@example.com",
+        "access_token": "test-access-token"
     }
 
-    with pytest.raises(tk.NotAuthorized, match="username"):
+    with pytest.raises(tk.NotAuthorized, match="Missing 'username' in Auth0 ID token"):
         plugin.get_oidc_user(userinfo)
