@@ -4,6 +4,7 @@ import ckan.plugins.toolkit as tk
 from unittest.mock import patch
 
 from ckanext.oidc_pkce_bpa.plugin import OidcPkceBpaPlugin
+from ckanext.oidc_pkce_bpa import utils
 
 
 @pytest.fixture
@@ -19,7 +20,15 @@ def clean_session():
     model.Session.remove()
 
 
-def test_create_new_user(plugin, clean_session):
+@pytest.fixture
+def mock_config(monkeypatch):
+    """Fixture to set constants used by utils.extract_username and app_metadata parsing."""
+    monkeypatch.setattr(utils, "USERNAME_CLAIM", "https://biocommons.org.au/username", raising=False)
+    monkeypatch.setattr(utils, "APP_METADATA_CLAIM", "https://biocommons.org.au/app_metadata", raising=False)
+    yield
+
+
+def test_create_new_user(plugin, clean_session, mock_config):
     """Test creating a new user with OIDC user info."""
     userinfo = {
         "sub": "auth0|123",
@@ -38,7 +47,7 @@ def test_create_new_user(plugin, clean_session):
     assert user.plugin_extras["oidc_pkce"]["auth0_id"] == "auth0|123"
 
 
-def test_existing_user_backfill_auth0(plugin, clean_session):
+def test_existing_user_backfill_auth0(plugin, clean_session, mock_config):
     """Test updating an existing user with missing Auth0 ID."""
     user = model.User(name="existinguser", email="existing@example.com", fullname="Existing User", password="")
     model.Session.add(user)
@@ -61,7 +70,7 @@ def test_existing_user_backfill_auth0(plugin, clean_session):
     assert updated_user.plugin_extras["oidc_pkce"]["auth0_id"] == "auth0|456"
 
 
-def test_existing_user_update_fullname(plugin, clean_session):
+def test_existing_user_update_fullname(plugin, clean_session, mock_config):
     """Test updating the fullname of an existing user."""
     user = model.User(name="fullnameuser", email="full@example.com", fullname="Old Name", password="")
     user.plugin_extras = {"oidc_pkce": {"auth0_id": "auth0|789"}}
@@ -82,13 +91,14 @@ def test_existing_user_update_fullname(plugin, clean_session):
     assert updated_user.fullname == "New Name"
 
 
-def test_pending_resources_stored(plugin, clean_session):
+def test_pending_resources_stored(plugin, clean_session, mock_config):
     """Test storing pending resources in the user's plugin extras."""
     userinfo = {
         "sub": "auth0|999",
         "email": "pending@example.com",
         "name": "Pending User",
         "https://biocommons.org.au/username": "pendinguser",
+        "access_token": "test-access-token"
     }
     app_metadata = {
         "services": [
