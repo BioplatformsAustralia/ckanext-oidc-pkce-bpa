@@ -1,7 +1,6 @@
 import pytest
 from ckan import model
 import ckan.plugins.toolkit as tk
-from unittest.mock import patch
 
 from ckanext.oidc_pkce_bpa.plugin import OidcPkceBpaPlugin
 from ckanext.oidc_pkce_bpa import utils
@@ -22,9 +21,9 @@ def clean_session():
 
 @pytest.fixture
 def mock_config(monkeypatch):
-    """Fixture to set constants used by utils.extract_username and app_metadata parsing."""
+    """Fixture to set constants used by utils.extract_username."""
     monkeypatch.setattr(utils, "USERNAME_CLAIM", "https://biocommons.org.au/username", raising=False)
-    monkeypatch.setattr(utils, "APP_METADATA_CLAIM", "https://biocommons.org.au/app_metadata", raising=False)
+    # APP_METADATA_CLAIM not needed anymore, so no patch
     yield
 
 
@@ -35,11 +34,9 @@ def test_create_new_user(plugin, clean_session, mock_config):
         "email": "newuser@example.com",
         "name": "New User",
         "https://biocommons.org.au/username": "newuser",
-        "access_token": "test-access-token"
     }
 
-    with patch("ckanext.oidc_pkce_bpa.utils.get_user_app_metadata", return_value={}):
-        user = plugin.get_oidc_user(userinfo)
+    user = plugin.get_oidc_user(userinfo)
 
     assert user.name == "newuser"
     assert user.email == "newuser@example.com"
@@ -63,6 +60,8 @@ def test_existing_user_backfill_auth0(plugin, clean_session, mock_config):
         "https://biocommons.org.au/username": "existinguser",
     }
 
+    updated_user = plugin.get_oidc_user(userinfo)
+
     assert updated_user.plugin_extras["oidc_pkce"]["auth0_id"] == "auth0|456"
 
 
@@ -80,8 +79,9 @@ def test_existing_user_update_fullname(plugin, clean_session, mock_config):
         "https://biocommons.org.au/username": "fullnameuser",
     }
 
-    assert updated_user.fullname == "New Name"
+    updated_user = plugin.get_oidc_user(userinfo)
 
+    assert updated_user.fullname == "New Name"
 
 
 def test_missing_sub_raises(plugin):

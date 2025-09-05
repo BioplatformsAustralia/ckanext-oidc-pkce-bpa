@@ -1,13 +1,14 @@
+from flask import Blueprint, redirect
 import logging
 import uuid
 
-import ckan.plugins.toolkit as tk
 from . import utils
 
 from ckan import model
-
 from ckan.common import session
 from ckan.plugins import SingletonPlugin, implements
+from ckan.plugins.interfaces import IBlueprint
+import ckan.plugins.toolkit as tk
 
 from ckanext.oidc_pkce.interfaces import IOidcPkce
 
@@ -16,6 +17,7 @@ log = logging.getLogger(__name__)
 
 class OidcPkceBpaPlugin(SingletonPlugin):
     implements(IOidcPkce, inherit=True)
+    implements(IBlueprint)
 
     def get_oidc_user(self, userinfo: dict) -> model.User:
         """
@@ -26,11 +28,6 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         sub = userinfo.get("sub")
         if not sub:
             raise tk.NotAuthorized("'userinfo' missing 'sub' claim during get_oidc_user().")
-
-        access_token = userinfo.get("access_token")
-
-        if not access_token:
-            raise tk.NotAuthorized("'userinfo' missing 'access_token' claim during get_oidc_user().")
 
         # Resolve or create the CKAN user
         username = utils.extract_username(userinfo)
@@ -77,3 +74,18 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         if updated_fullname and user.fullname != updated_fullname:
             log.info("Updating fullname for '%s' to '%s'", user.name, updated_fullname)
             user.fullname = updated_fullname
+
+    def get_blueprint(self):
+        bp = Blueprint("oidc_pkce_bpa_routes", __name__)
+
+        @bp.route("/user/register")
+        def force_oidc_register():
+            # hard-redirect to your portal registration
+            return redirect("https://aaiportal.test.biocommons.org.au/bpa/register")
+
+        @bp.route("/user/login")
+        def force_oidc_login():
+            # redirect into your OIDC login route inside CKAN
+            return tk.redirect_to("oidc_pkce.login")
+
+        return bp
