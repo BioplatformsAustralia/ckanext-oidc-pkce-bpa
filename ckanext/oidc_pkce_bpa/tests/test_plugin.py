@@ -61,11 +61,7 @@ def test_existing_user_backfill_auth0(plugin, clean_session, mock_config):
         "email": "existing@example.com",
         "name": "Existing User",
         "https://biocommons.org.au/username": "existinguser",
-        "access_token": "test-access-token"
     }
-
-    with patch("ckanext.oidc_pkce_bpa.utils.get_user_app_metadata", return_value={}):
-        updated_user = plugin.get_oidc_user(userinfo)
 
     assert updated_user.plugin_extras["oidc_pkce"]["auth0_id"] == "auth0|456"
 
@@ -82,62 +78,10 @@ def test_existing_user_update_fullname(plugin, clean_session, mock_config):
         "email": "full@example.com",
         "name": "New Name",
         "https://biocommons.org.au/username": "fullnameuser",
-        "access_token": "test-access-token"
     }
-
-    with patch("ckanext.oidc_pkce_bpa.utils.get_user_app_metadata", return_value={}):
-        updated_user = plugin.get_oidc_user(userinfo)
 
     assert updated_user.fullname == "New Name"
 
-
-def test_pending_resources_stored(plugin, clean_session, mock_config):
-    """Test storing pending resources in the user's plugin extras."""
-    userinfo = {
-        "sub": "auth0|999",
-        "email": "pending@example.com",
-        "name": "Pending User",
-        "https://biocommons.org.au/username": "pendinguser",
-        "access_token": "test-access-token"
-    }
-    app_metadata = {
-        "services": [
-            {
-                "name": "Bioplatforms Australia Data Portal",
-                "id": "bpa",
-                "resources": [
-                    {
-                        "id": "cipps",
-                        "name": "ARC for Innovations in Peptide and Protein Science (CIPPS)",
-                        "status": "pending",
-                        "initial_request_time": "2025-08-02T09:48:54.011361Z",
-                        "last_updated": "2025-08-02T09:48:54.011361Z",
-                        "updated_by": "system",
-                    }
-                ],
-            }
-        ]
-    }
-
-    def mock_action(name):
-        if name == "organization_show":
-            return lambda ctx, data: {"name": data["id"]}
-        raise AssertionError(f"Unexpected action requested: {name}")
-
-    with patch("ckan.plugins.toolkit.get_action", side_effect=mock_action), \
-         patch("ckanext.oidc_pkce_bpa.plugin.session", {}), \
-         patch("ckanext.oidc_pkce_bpa.utils.get_user_app_metadata", return_value=app_metadata), \
-         patch("ckanext.oidc_pkce_bpa.utils.sync_org_memberships_from_auth0") as mock_sync:
-        user = plugin.get_oidc_user(userinfo)
-
-    org_request = user.plugin_extras["oidc_pkce"]["org_request"]
-
-    assert isinstance(org_request, list)
-    assert len(org_request) == 1
-    assert org_request[0]["id"] == "cipps"
-    assert org_request[0]["status"] == "pending"
-    assert org_request[0]["handler"] == "system"
-    mock_sync.assert_called_once()
 
 
 def test_missing_sub_raises(plugin):
@@ -156,7 +100,6 @@ def test_missing_username_raises(plugin):
     userinfo = {
         "sub": "auth0|999",
         "email": "missing@example.com",
-        "access_token": "test-access-token"
     }
 
     with pytest.raises(tk.NotAuthorized, match="Missing 'username' in Auth0 ID token"):

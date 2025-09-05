@@ -1,4 +1,6 @@
 import logging
+import uuid
+
 import ckan.plugins.toolkit as tk
 from . import utils
 
@@ -40,24 +42,19 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         self._ensure_auth0_id(user, sub)
         self._update_fullname_if_needed(user, userinfo)
 
-        # Fetch app_metadata via access token
-        app_metadata = utils.get_user_app_metadata(access_token)
-
-        if app_metadata:
-            self._store_org_metadata_and_sync(user, app_metadata)
-        else:
-            log.info("No app_metadata available for user: '%s'", username)
-
         model.Session.add(user)
         model.Session.commit()
         return user
 
     def _create_new_user(self, userinfo: dict, username: str) -> model.User:
+        # Generate a random UUID-based placeholder password that CKAN won't accept
+        invalid_password = f"INVALID-{uuid.uuid4()}"
+        
         user = model.User(
             name=username,
             email=userinfo.get("email"),
             fullname=userinfo.get("name", username),
-            password="",  # Not used (OIDC-managed)
+            password=invalid_password,
         )
         model.Session.add(user)
         model.Session.commit()
@@ -80,26 +77,3 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         if updated_fullname and user.fullname != updated_fullname:
             log.info("Updating fullname for '%s' to '%s'", user.name, updated_fullname)
             user.fullname = updated_fullname
-
-    def _store_org_metadata_and_sync(self, user: model.User, claims_or_app_metadata: dict):
-        """
-        Accepts raw app_metadata and:
-          - stores for UI (My Memberships) in session
-          - mirrors pending requests into ckanext-ytp-request
-        """
-        context = {"user": user.name}
-
-        org_metadata = utils.get_org_metadata_from_services(claims_or_app_metadata, context)
-        if not org_metadata:
-            return
-
-        # Persist on the user for audit/inspection
-        user.plugin_extras["oidc_pkce"] = user.plugin_extras.get("oidc_pkce", {})
-        user.plugin_extras["oidc_pkce"]["org_request"] = org_metadata
-
-        # Surface to the UI via session for the My Memberships page
-        session["ckanext:oidc-pkce-bpa:org_metadata"] = org_metadata
-        log.info("Stored %d org resource records for user '%s'", len(org_metadata), user.name)
-
-        # create pending requests in ytp-request if not present
-        utils.sync_org_memberships_from_auth0(user.name, org_metadata, context)
