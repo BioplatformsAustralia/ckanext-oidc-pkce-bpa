@@ -1,25 +1,7 @@
-import json
-import time
-import jwt
 import logging
-import requests
-
-from ckan.plugins.toolkit import config as ckan_config, NotAuthorized
-
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-try:
-    from jwt.algorithms import RSAAlgorithm  # PyJWT < 2.10
-except ImportError:
-    RSAAlgorithm = None
-
-try:
-    from jwt import PyJWKClient  # PyJWT >= 2.0
-except ImportError:
-    PyJWKClient = None
 
 import ckan.plugins.toolkit as tk
+from ckan.plugins.toolkit import config as ckan_config, NotAuthorized
 
 log = logging.getLogger(__name__)
 
