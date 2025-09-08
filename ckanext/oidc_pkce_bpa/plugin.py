@@ -80,12 +80,12 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
         @bp.route("/user/register")
         def force_oidc_register():
-            # hard-redirect to your portal registration
-            return redirect("https://aaiportal.test.biocommons.org.au/bpa/register")
+            # hard-redirect to AAI portal user registration page
+            return redirect(utils.get_redirect_registeration_url())
 
         @bp.route("/user/login")
         def force_oidc_login():
-            # redirect into your OIDC login route inside CKAN
+            # redirect into OIDC login route inside CKAN
             return tk.redirect_to("oidc_pkce.login")
 
         return bp
