@@ -22,8 +22,10 @@ def clean_session():
 @pytest.fixture
 def mock_config(monkeypatch):
     """Fixture to set constants used by utils.extract_username."""
-    monkeypatch.setattr(utils, "USERNAME_CLAIM", "https://biocommons.org.au/username", raising=False)
-    # APP_METADATA_CLAIM not needed anymore, so no patch
+    fake_cfg = {"ckanext.oidc_pkce_bpa.username_claim": "https://biocommons.org.au/username"}
+    # Patch both the alias inside utils and the toolkit config (belt & braces)
+    monkeypatch.setattr(utils, "ckan_config", fake_cfg, raising=False)
+    monkeypatch.setattr(tk, "config", fake_cfg, raising=False)
     yield
 
 
