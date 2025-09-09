@@ -14,7 +14,7 @@ def extract_username(userinfo: dict) -> str:
     return username
 
 def get_redirect_registeration_url() -> str:
-    redirect_registeration_url = ckan_config.get("ckanext.oidc_pkce_bpa.redirect_registration_url")
-    if not redirect_registeration_url:
-        raise tk.NotAuthorized("Missing redirect registation url set in ckan.ini!")
-    return redirect_registeration_url
+    register_redirect_url = ckan_config.get("ckanext.oidc_pkce_bpa.register_redirect_url")
+    if not register_redirect_url:
+        raise tk.NotAuthorized("redirect_registation_url not set in ckan.ini!")
+    return register_redirect_url
