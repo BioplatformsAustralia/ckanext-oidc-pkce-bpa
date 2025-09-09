@@ -22,11 +22,11 @@ def test_extract_username_fallback_and_missing(monkeypatch):
 
 
 def test_get_redirect_registeration_url_present(monkeypatch):
-    monkeypatch.setattr(utils, "ckan_config", {"ckanext.oidc_pkce_bpa.redirect_registration_url": "http://example.com/register"})
+    monkeypatch.setattr(utils, "ckan_config", {"ckanext.oidc_pkce_bpa.register_redirect_url": "http://example.com/register"})
     assert utils.get_redirect_registeration_url() == "http://example.com/register"
 
 
 def test_get_redirect_registeration_url_missing(monkeypatch):
     monkeypatch.setattr(utils, "ckan_config", {})
-    with pytest.raises(tk.NotAuthorized, match="redirect registation url"):
+    with pytest.raises(tk.NotAuthorized, match="redirect_registation_url"):
         utils.get_redirect_registeration_url()
