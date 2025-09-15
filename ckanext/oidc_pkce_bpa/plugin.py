@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 class OidcPkceBpaPlugin(SingletonPlugin):
     implements(IOidcPkce, inherit=True)
-    implements(IBlueprint)
+    # implements(IBlueprint)
 
     def get_oidc_user(self, userinfo: dict) -> model.User:
         """
@@ -42,6 +42,22 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         model.Session.add(user)
         model.Session.commit()
         return user
+
+    def apply_role_memberships(self, *, user: model.User, access_token: str):
+        """
+        Decode roles from the access token and apply role-triggered membership actions.
+        Currently: if role == 'biocommons/group/tsi', create a pending request for
+        the 'aai-threatened-species-initiative-embargo' organization (idempotent).
+        """
+        try:
+            roles = utils.get_user_roles(access_token)
+        except Exception as e:
+            log.warning("Could not read roles from access token for user '%s': %s", user.name, e)
+            return
+
+        context = {"model": model, "user": user.name}
+        utils.apply_role_based_memberships(user_name=user.name, roles=roles, context=context)
+
 
     def _create_new_user(self, userinfo: dict, username: str) -> model.User:
         # Generate a random UUID-based placeholder password that CKAN won't accept
