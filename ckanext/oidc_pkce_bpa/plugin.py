@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 class OidcPkceBpaPlugin(SingletonPlugin):
     implements(IOidcPkce, inherit=True)
-    # implements(IBlueprint)
+    implements(IBlueprint)
 
     def get_oidc_user(self, userinfo: dict) -> model.User:
         """
