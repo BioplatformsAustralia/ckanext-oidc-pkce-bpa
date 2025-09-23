@@ -191,3 +191,17 @@ def test_missing_access_token_raises(plugin, mock_services):
 
     mock_services.token_service.get_user_roles.assert_not_called()
     mock_services.membership_service.apply_role_based_memberships.assert_not_called()
+
+
+def test_blueprint_routes(plugin, mock_config, monkeypatch):
+    """Blueprint routes perform the expected redirects."""
+    blueprint = plugin.get_blueprint()
+
+    register_view = blueprint.view_functions["oidc_pkce_bpa.force_oidc_register"]
+    response = register_view()
+    assert response.status_code == 302
+    assert response.location == "https://example.com/register"
+
+    monkeypatch.setattr(tk, "redirect_to", lambda endpoint: f"redirect:{endpoint}")
+    login_view = blueprint.view_functions["oidc_pkce_bpa.force_oidc_login"]
+    assert login_view() == "redirect:oidc_pkce.login"

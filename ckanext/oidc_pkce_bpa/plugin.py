@@ -95,6 +95,8 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             user.fullname = updated_fullname
 
     def get_blueprint(self):
+        bp = Blueprint("oidc_pkce_bpa", __name__)
+
         @bp.route("/user/register")
         def force_oidc_register():
             # hard-redirect to AAI portal user registration page
