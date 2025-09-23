@@ -21,42 +21,45 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
     def get_oidc_user(self, userinfo: dict) -> model.User:
         """
-        Upstream calls this with only `userinfo`. We fetch app_metadata via
-        the Auth0 Management API using the user's `sub` and then normalise +
-        stash it for UI (and optionally sync into ytp-request).
+        Called post-OIDC login. We resolve/create the CKAN user, then
+        (as the site user) grant organization access based on roles in
+        the Auth0 access token.
         """
         sub = userinfo.get("sub")
         if not sub:
             raise tk.NotAuthorized("'userinfo' missing 'sub' claim during get_oidc_user().")
 
-        # Resolve or create the CKAN user
         username = utils.extract_username(userinfo)
-        user = model.User.get(username)
-        if not user:
-            user = self._create_new_user(userinfo, username)
-
-        # Keep basic identity fields aligned
+        user = model.User.get(username) or self._create_new_user(userinfo, username)
         self._ensure_auth0_id(user, sub)
         self._update_fullname_if_needed(user, userinfo)
+
+        access_token = userinfo.get("access_token")
+        if not access_token:
+            raise tk.ValidationError("No access token available during get_oidc_user()!")
+
+        # Apply roles → membership once, as site user (authorised context).
+        token_service = utils.get_token_service()
+        try:
+            roles = token_service.get_user_roles(access_token)
+        except Exception as e:
+            log.warning("Failed to read Auth0 roles for '%s': %s", user.name, e)
+        else:
+            log.debug("Auth0 roles for '%s': %s", user.name, roles)
+            try:
+                site_ctx = utils.get_site_context()
+                membership_service = utils.get_membership_service()
+                membership_service.apply_role_based_memberships(
+                    user_name=user.name,
+                    roles=roles,
+                    context=site_ctx,
+                )
+            except Exception as e:
+                log.warning("Role membership apply at login failed for '%s': %s", user.name, e)
 
         model.Session.add(user)
         model.Session.commit()
         return user
-
-    def apply_role_memberships(self, *, user: model.User, access_token: str):
-        """
-        Decode roles from the access token and apply role-triggered membership actions.
-        Currently: if role == 'biocommons/group/tsi', create a pending request for
-        the 'aai-threatened-species-initiative-embargo' organization (idempotent).
-        """
-        try:
-            roles = utils.get_user_roles(access_token)
-        except Exception as e:
-            log.warning("Could not read roles from access token for user '%s': %s", user.name, e)
-            return
-
-        context = {"model": model, "user": user.name}
-        utils.apply_role_based_memberships(user_name=user.name, roles=roles, context=context)
 
 
     def _create_new_user(self, userinfo: dict, username: str) -> model.User:
@@ -92,16 +95,14 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             user.fullname = updated_fullname
 
     def get_blueprint(self):
-        bp = Blueprint("oidc_pkce_bpa_routes", __name__)
-
         @bp.route("/user/register")
         def force_oidc_register():
             # hard-redirect to AAI portal user registration page
             return redirect(utils.get_redirect_registeration_url())
-
+    
         @bp.route("/user/login")
         def force_oidc_login():
             # redirect into OIDC login route inside CKAN
             return tk.redirect_to("oidc_pkce.login")
-
+    
         return bp

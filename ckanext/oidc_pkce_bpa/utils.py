@@ -2,26 +2,52 @@ import json
 import jwt
 import logging
 import requests
+from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Dict, List
 
 import ckan.plugins.toolkit as tk
 from ckan.plugins.toolkit import config as ckan_config, NotAuthorized
+from ckan import model as ckan_model
 
 log = logging.getLogger(__name__)
 
-# Required Auth0/OIDC settings
-API_AUDIENCE = ckan_config.get("ckanext.oidc_pkce_bpa.api_audience")
-AUTH0_DOMAIN = ckan_config.get("ckanext.oidc_pkce_bpa.auth0_domain")
-JWKS_URL = f"https://{AUTH0_DOMAIN}/.well-known/jwks.json"
 
-# Defaults to your Action’s namespaced claim; allow override via ckan.ini
-ROLES_CLAIM = ckan_config.get(
-    "ckanext.oidc_pkce_bpa.roles_claim",
-    "https://biocommons.org.au/roles",
-)
+def _require_config_value(*, key: str) -> str:
+    value = ckan_config.get(key)
+    if not value:
+        raise tk.NotAuthorized(f"Missing '{key}' configuration")
+    return value
 
-TSI_ROLE = "biocommons/group/tsi"
-TSI_ORG_ID = "aai-threatened-species-initiative-embargo"
+
+@dataclass(frozen=True)
+class Auth0Settings:
+    api_audience: str
+    auth0_domain: str
+    roles_claim: str
+    tsi_role: str
+    tsi_org_id: str
+    username_claim: str
+
+    @property
+    def issuer(self) -> str:
+        return f"https://{self.auth0_domain}/"
+
+    @property
+    def jwks_url(self) -> str:
+        return f"{self.issuer}.well-known/jwks.json"
+
+
+@lru_cache(maxsize=1)
+def get_auth0_settings() -> Auth0Settings:
+    return Auth0Settings(
+        api_audience=_require_config_value(key="ckanext.oidc_pkce_bpa.api_audience"),
+        auth0_domain=_require_config_value(key="ckanext.oidc_pkce_bpa.auth0_domain"),
+        roles_claim=_require_config_value(key="ckanext.oidc_pkce_bpa.roles_claim"),
+        tsi_role=_require_config_value(key="ckanext.oidc_pkce_bpa.tsi_role"),
+        tsi_org_id=_require_config_value(key="ckanext.oidc_pkce_bpa.tsi_org_id"),
+        username_claim=_require_config_value(key="ckanext.oidc_pkce_bpa.username_claim"),
+    )
 
 # PyJWT compatibility
 try:
@@ -36,8 +62,8 @@ except ImportError:
 
 
 def extract_username(userinfo: dict) -> str:
-    username_claim = ckan_config.get("ckanext.oidc_pkce_bpa.username_claim")
-    username = userinfo.get(username_claim) or userinfo.get("nickname")
+    settings = get_auth0_settings()
+    username = userinfo.get(settings.username_claim) or userinfo.get("nickname")
     if not username:
         raise tk.NotAuthorized("Missing 'username' in Auth0 ID token")
     return username
@@ -50,147 +76,161 @@ def get_redirect_registeration_url() -> str:
     return register_redirect_url
 
 
+def get_site_context() -> Dict[str, Any]:
+    """Return an action context that runs as the CKAN site user."""
+    site_user = tk.get_action("get_site_user")({"ignore_auth": True}, {})
+    if not site_user or not site_user.get("name"):
+        raise tk.NotAuthorized("Site user account is not configured")
 
-def _get_jwks() -> Dict[str, Any]:
-    """Fetch Auth0 JWKS for RS256 verification."""
-    resp = requests.get(JWKS_URL, timeout=10)
+    return {
+        "ignore_auth": True,
+        "user": site_user["name"],
+        "model": ckan_model,
+        "session": ckan_model.Session,
+    }
+
+
+@lru_cache(maxsize=1)
+def _cached_jwks(url: str) -> Dict[str, Any]:
+    resp = requests.get(url, timeout=10)
     resp.raise_for_status()
     return resp.json()
 
 
-def _get_signing_key(token: str):
-    """
-    Resolve signing key from JWKS.
-    Supports both old (RSAAlgorithm) and new (PyJWKClient) PyJWT versions.
-    """
-    if RSAAlgorithm is not None:
-        unverified = jwt.get_unverified_header(token)
-        jwks = _get_jwks()
-        for key in jwks.get("keys", []):
-            if key.get("kid") == unverified.get("kid"):
-                return RSAAlgorithm.from_jwk(json.dumps(key))
-        raise Exception("Unable to find signing key for the token")
-
-    if PyJWKClient is not None:
-        jwk_client = PyJWKClient(JWKS_URL)
-        return jwk_client.get_signing_key_from_jwt(token).key
-
-    raise ImportError("Neither RSAAlgorithm nor PyJWKClient available; unsupported PyJWT version")
+@lru_cache(maxsize=1)
+def _cached_jwk_client(url: str):
+    if PyJWKClient is None:
+        return None
+    return PyJWKClient(url)
 
 
-def _decode_access_token(token: Any) -> Dict[str, Any]:
-    """
-    Decode & verify an Auth0 access token (RS256 + JWKS).
-    Returns {} on failure; callers raise if they need to.
-    """
-    if isinstance(token, dict):
-        log.info("Token is already a dict — skipping JWT decode")
-        return token
-    if isinstance(token, bytes):
-        token = token.decode("utf-8")
+class Auth0TokenService:
+    def __init__(self, settings: Auth0Settings):
+        self._settings = settings
 
-    # Early sanity check (no verification) for clearer logs
-    try:
-        jwt.decode(token, options={"verify_signature": False, "verify_aud": False})
-    except Exception as e:
-        log.error(f"Failed to decode JWT without verification: {e}")
-        return {}
+    def _get_jwks(self) -> Dict[str, Any]:
+        return _cached_jwks(self._settings.jwks_url)
 
-    try:
-        key = _get_signing_key(token)
-        return jwt.decode(
-            token,
-            key=key,
-            algorithms=["RS256"],
-            audience=API_AUDIENCE,
-            issuer=f"https://{AUTH0_DOMAIN}/",
-        )
-    except Exception as e:
-        log.error(f"JWT verification failed: {e}")
-        return {}
+    def _get_signing_key(self, token: str):
+        if RSAAlgorithm is not None:
+            unverified = jwt.get_unverified_header(token)
+            jwks = self._get_jwks()
+            for key in jwks.get("keys", []):
+                if key.get("kid") == unverified.get("kid"):
+                    return RSAAlgorithm.from_jwk(json.dumps(key))
+            raise Exception("Unable to find signing key for the token")
+
+        if PyJWKClient is not None:
+            jwk_client = _cached_jwk_client(self._settings.jwks_url)
+            if jwk_client is None:
+                raise ImportError("PyJWKClient unavailable for token verification")
+            return jwk_client.get_signing_key_from_jwt(token).key
+
+        raise ImportError("Neither RSAAlgorithm nor PyJWKClient available; unsupported PyJWT version")
+
+    def decode_access_token(self, token: Any) -> Dict[str, Any]:
+        if isinstance(token, dict):
+            log.info("Token is already a dict — skipping JWT decode")
+            return token
+        if isinstance(token, bytes):
+            token = token.decode("utf-8")
+
+        try:
+            jwt.decode(token, options={"verify_signature": False, "verify_aud": False})
+        except Exception as exc:
+            log.error("Failed to decode JWT without verification: %s", exc)
+            return {}
+
+        try:
+            key = self._get_signing_key(token)
+            return jwt.decode(
+                token,
+                key=key,
+                algorithms=["RS256"],
+                audience=self._settings.api_audience,
+                issuer=self._settings.issuer,
+            )
+        except Exception as exc:
+            log.error("JWT verification failed: %s", exc)
+            return {}
+
+    def get_user_roles(self, token: Any) -> List[str]:
+        claims = self.decode_access_token(token)
+        if not claims:
+            return []
+        return self._extract_roles_from_claims(claims)
+
+    def _extract_roles_from_claims(self, claims: Dict[str, Any]) -> List[str]:
+        roles: List[str] = []
+        val = claims.get(self._settings.roles_claim)
+
+        if isinstance(val, list):
+            roles.extend(str(v) for v in val if v)
+        elif isinstance(val, str):
+            roles.extend(s for s in (item.strip() for item in val.replace(",", " ").split()) if s)
+
+        return sorted({r for r in roles if isinstance(r, str) and r})
 
 
-def _get_roles_from_claims(claims: Dict[str, Any]) -> List[str]:
-    """
-    Extract roles from the configured namespaced claim (array preferred, but
-    comma/space-delimited strings tolerated).
-    """
-    roles: List[str] = []
-    val = claims.get(ROLES_CLAIM)
-
-    if isinstance(val, list):
-        roles.extend(str(v) for v in val if v)
-    elif isinstance(val, str):
-        roles.extend(s for s in (x.strip() for x in val.replace(",", " ").split()) if s)
-
-    # Deduplicate and sort for stable output
-    return sorted({r for r in roles if isinstance(r, str) and r})
+@lru_cache(maxsize=1)
+def get_token_service() -> Auth0TokenService:
+    return Auth0TokenService(get_auth0_settings())
 
 
-def get_user_roles(access_token: Any) -> List[str]:
-    """
-    Public helper: verify the access token and return roles from
-    the namespaced claim (default: https://biocommons.org.au/roles).
-    """
-    if not access_token:
-        raise tk.NotAuthorized("Access token is required but missing")
+class MembershipService:
+    def __init__(self, settings: Auth0Settings):
+        self._settings = settings
 
-    claims = _decode_access_token(access_token)
-    if not claims:
-        raise tk.ValidationError("Unable to decode or verify access token")
-
-    return _get_roles_from_claims(claims)
-
-
-def _create_pending_membership_if_absent(*, org_id: str, user_name: str, context: Dict[str, Any]):
-    """
-    Idempotently create a pending membership request for user/org.
-    Mirrors the snippet you provided.
-    """
-    try:
-        existing = tk.get_action("member_requests_list")(context, {
-            "object_id": org_id,
-            "object_type": "organization",
-            "type": "membership",
-            "user": user_name,
-            "status": "pending",
-        })
-        if existing:
-            log.info("Pending request already exists for user '%s' in org '%s', skipping.", user_name, org_id)
+    def apply_role_based_memberships(self, *, user_name: str, roles: List[str], context: Dict[str, Any]):
+        if not roles:
             return
 
-        tk.get_action("member_request_create")(context, {
-            "object_id": org_id,
-            "object_type": "organization",
-            "type": "membership",
-            "message": "Auto-created from Auth0 role biocommons/group/tsi",
-        })
-        log.info("Created pending membership request for '%s' in '%s' via TSI role trigger", user_name, org_id)
+        if self._settings.tsi_role in set(roles):
+            self._ensure_org_member(org_id=self._settings.tsi_org_id, user_name=user_name, context=context)
 
-    except tk.ValidationError as e:
-        log.warning("Validation error creating membership request for '%s': %s", org_id, e)
-    except Exception as e:
-        log.error("Failed to create membership request for '%s' in '%s': %s", user_name, org_id, e)
+    def _ensure_org_member(self, *, org_id: str, user_name: str, context: Dict[str, Any]):
+        try:
+            members = tk.get_action("member_list")(context, {"id": org_id, "object_type": "user"})
+            if any(self._member_entry_matches_user(member, user_name) for member in members):
+                log.info("User '%s' already a member of '%s'; skipping.", user_name, org_id)
+                return
+            tk.get_action("member_create")(context, {
+                "id": org_id,
+                "object": user_name,
+                "object_type": "user",
+                "capacity": "member"
+            })
+            log.info("Granted '%s' access to org '%s' with capacity 'member'", user_name, org_id)
+        except NotAuthorized as exc:
+            log.error("NotAuthorized adding '%s' to '%s': %s (tip: use site user context)", user_name, org_id, exc)
+            raise
+        except tk.ValidationError as exc:
+            log.warning("Validation error adding '%s' to '%s': %s", user_name, org_id, exc)
+        except Exception as exc:
+            log.error("Failed to add '%s' to '%s': %s", user_name, org_id, exc)
+
+    @staticmethod
+    def _member_entry_matches_user(member: Any, user_name: str) -> bool:
+        if isinstance(member, dict):
+            for key in ("username", "name", "id", "object", "user"):
+                if member.get(key) == user_name:
+                    return True
+            return False
+
+        if isinstance(member, (list, tuple)):
+            return any(isinstance(item, str) and item == user_name for item in member)
+
+        return False
+
+
+@lru_cache(maxsize=1)
+def get_membership_service() -> MembershipService:
+    return MembershipService(get_auth0_settings())
+
+
+def get_user_roles(token: Any) -> List[str]:
+    return get_token_service().get_user_roles(token)
 
 
 def apply_role_based_memberships(*, user_name: str, roles: List[str], context: Dict[str, Any]):
-    """
-    If user has 'biocommons/group/tsi', create a pending membership request
-    for the 'aai-threatened-species-initiative-embargo' org (idempotent).
-    """
-    if not roles:
-        return
-
-    if TSI_ROLE in set(roles):
-        # Ensure target org exists before attempting (avoid noise)
-        try:
-            tk.get_action("organization_show")(context, {"id": TSI_ORG_ID})
-        except tk.ObjectNotFound:
-            log.warning("Org '%s' not found in CKAN, skipping membership creation.", TSI_ORG_ID)
-            return
-
-        _create_pending_membership_if_absent(
-            org_id=TSI_ORG_ID,
-            user_name=user_name,
-            context=context,
-        )
+    get_membership_service().apply_role_based_memberships(user_name=user_name, roles=roles, context=context)
