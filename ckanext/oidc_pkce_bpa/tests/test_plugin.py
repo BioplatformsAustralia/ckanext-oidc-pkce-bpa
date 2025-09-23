@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from flask import Flask, redirect
 from ckan import model
 import ckan.plugins.toolkit as tk
 
@@ -196,12 +197,17 @@ def test_missing_access_token_raises(plugin, mock_services):
 def test_blueprint_routes(plugin, mock_config, monkeypatch):
     """Blueprint routes perform the expected redirects."""
     blueprint = plugin.get_blueprint()
+    app = Flask(__name__)
+    app.register_blueprint(blueprint)
 
-    register_view = blueprint.view_functions["oidc_pkce_bpa.force_oidc_register"]
-    response = register_view()
-    assert response.status_code == 302
-    assert response.location == "https://example.com/register"
+    monkeypatch.setattr(tk, "redirect_to", lambda endpoint: redirect(f"/mock/{endpoint}"))
 
-    monkeypatch.setattr(tk, "redirect_to", lambda endpoint: f"redirect:{endpoint}")
-    login_view = blueprint.view_functions["oidc_pkce_bpa.force_oidc_login"]
-    assert login_view() == "redirect:oidc_pkce.login"
+    client = app.test_client()
+
+    register_response = client.get("/user/register")
+    assert register_response.status_code == 302
+    assert register_response.headers["Location"] == "https://example.com/register"
+
+    login_response = client.get("/user/login")
+    assert login_response.status_code == 302
+    assert login_response.headers["Location"].endswith("/mock/oidc_pkce.login")
