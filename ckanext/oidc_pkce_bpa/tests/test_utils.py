@@ -1,3 +1,5 @@
+import json
+
 import pytest
 import ckan.plugins.toolkit as tk
 
@@ -11,8 +13,12 @@ def auth0_config(monkeypatch):
         "ckanext.oidc_pkce_bpa.api_audience": "test-audience",
         "ckanext.oidc_pkce_bpa.auth0_domain": "auth0.example.com",
         "ckanext.oidc_pkce_bpa.roles_claim": "https://example.com/roles",
-        "ckanext.oidc_pkce_bpa.tsi_role": "tsi-member",
-        "ckanext.oidc_pkce_bpa.tsi_org_id": "org-123",
+        "ckanext.oidc_pkce_bpa.role_org_mapping": json.dumps(
+            {
+                "tsi-member": ["org-123", "org-456"],
+                "duplicate-role": ["org-123", "org-123"],
+            }
+        ),
         "ckanext.oidc_pkce_bpa.username_claim": "claim_key",
         "ckanext.oidc_pkce_bpa.register_redirect_url": "http://example.com/register",
     }
@@ -47,3 +53,13 @@ def test_get_redirect_registeration_url_missing(monkeypatch):
     monkeypatch.setattr(utils, "ckan_config", {})
     with pytest.raises(tk.NotAuthorized, match="redirect_registation_url"):
         utils.get_redirect_registeration_url()
+
+
+def test_role_org_mapping_is_normalised(auth0_config):
+    settings = utils.get_auth0_settings()
+    assert settings.role_org_mapping["tsi-member"] == ("org-123", "org-456")
+    assert settings.role_org_mapping["duplicate-role"] == ("org-123",)
+
+    # Ensure mapping is read-only to callers
+    with pytest.raises(TypeError):
+        settings.role_org_mapping["duplicate-role"] = ("org-123", "org-456")

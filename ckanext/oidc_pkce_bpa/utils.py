@@ -1,10 +1,13 @@
+import ast
 import json
 import jwt
 import logging
 import requests
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Mapping, Tuple
+
+from types import MappingProxyType
 
 import ckan.plugins.toolkit as tk
 from ckan.plugins.toolkit import config as ckan_config, NotAuthorized
@@ -20,13 +23,83 @@ def _require_config_value(*, key: str) -> str:
     return value
 
 
-@dataclass(frozen=True)
+def _require_role_org_mapping(*, key: str) -> Mapping[str, Tuple[str, ...]]:
+    raw_value = _require_config_value(key=key)
+
+    def _load_mapping(value: str) -> Dict[str, Any]:
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            try:
+                return ast.literal_eval(value)
+            except (ValueError, SyntaxError) as exc:
+                raise tk.NotAuthorized(
+                    f"Configuration '{key}' must be valid JSON or Python literal syntax"
+                ) from exc
+
+    parsed = _load_mapping(raw_value)
+    if not isinstance(parsed, dict):
+        raise tk.NotAuthorized(f"Configuration '{key}' must be a mapping of role → organizations")
+
+    normalised: Dict[str, Tuple[str, ...]] = {}
+    for role, orgs in parsed.items():
+        if not isinstance(role, str) or not role.strip():
+            raise tk.NotAuthorized(
+                f"Configuration '{key}' must use non-empty strings for role names"
+            )
+
+        org_id_list: Iterable[Any]
+        if isinstance(orgs, str):
+            org_id_list = [orgs]
+        elif isinstance(orgs, Mapping):
+            raise tk.NotAuthorized(
+                f"Configuration '{key}' must map role '{role}' to a sequence of organisation ids, not a mapping"
+            )
+        elif isinstance(orgs, Iterable):
+            org_id_list = orgs
+        else:
+            raise tk.NotAuthorized(
+                f"Configuration '{key}' must map role '{role}' to a string or iterable of strings"
+            )
+
+        unique_orgs: List[str] = []
+        seen = set()
+        for org in org_id_list:
+            if not isinstance(org, str) or not org.strip():
+                raise tk.NotAuthorized(
+                    f"Configuration '{key}' has an invalid organization id for role '{role}'"
+                )
+            cleaned = org.strip()
+            if cleaned in seen:
+                continue
+            seen.add(cleaned)
+            unique_orgs.append(cleaned)
+
+        if not unique_orgs:
+            log.warning(
+                "Role '%s' in configuration '%s' does not list any organisations; skipping.",
+                role,
+                key,
+            )
+            continue
+
+        normalised[role] = tuple(unique_orgs)
+
+    if not normalised:
+        log.warning(
+            "Configuration '%s' did not yield any role → organisation mappings.",
+            key,
+        )
+
+    return MappingProxyType(normalised)
+
+
+@dataclass(frozen=True, eq=False)
 class Auth0Settings:
     api_audience: str
     auth0_domain: str
     roles_claim: str
-    tsi_role: str
-    tsi_org_id: str
+    role_org_mapping: Mapping[str, Tuple[str, ...]]
     username_claim: str
 
     @property
@@ -44,8 +117,7 @@ def get_auth0_settings() -> Auth0Settings:
         api_audience=_require_config_value(key="ckanext.oidc_pkce_bpa.api_audience"),
         auth0_domain=_require_config_value(key="ckanext.oidc_pkce_bpa.auth0_domain"),
         roles_claim=_require_config_value(key="ckanext.oidc_pkce_bpa.roles_claim"),
-        tsi_role=_require_config_value(key="ckanext.oidc_pkce_bpa.tsi_role"),
-        tsi_org_id=_require_config_value(key="ckanext.oidc_pkce_bpa.tsi_org_id"),
+        role_org_mapping=_require_role_org_mapping(key="ckanext.oidc_pkce_bpa.role_org_mapping"),
         username_claim=_require_config_value(key="ckanext.oidc_pkce_bpa.username_claim"),
     )
 
@@ -185,8 +257,18 @@ class MembershipService:
         if not roles:
             return
 
-        if self._settings.tsi_role in set(roles):
-            self._ensure_org_member(org_id=self._settings.tsi_org_id, user_name=user_name, context=context)
+        seen_org_ids = set()
+        for role in roles:
+            org_ids = self._settings.role_org_mapping.get(role)
+            if not org_ids:
+                log.debug("No organisation mapping defined for role '%s'", role)
+                continue
+
+            for org_id in org_ids:
+                if org_id in seen_org_ids:
+                    continue
+                seen_org_ids.add(org_id)
+                self._ensure_org_member(org_id=org_id, user_name=user_name, context=context)
 
     def _ensure_org_member(self, *, org_id: str, user_name: str, context: Dict[str, Any]):
         try:

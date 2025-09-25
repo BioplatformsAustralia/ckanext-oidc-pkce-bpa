@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -30,8 +31,7 @@ def mock_config(monkeypatch):
         "ckanext.oidc_pkce_bpa.api_audience": "test-audience",
         "ckanext.oidc_pkce_bpa.auth0_domain": "auth0.example.com",
         "ckanext.oidc_pkce_bpa.roles_claim": "https://example.com/roles",
-        "ckanext.oidc_pkce_bpa.tsi_role": "tsi-member",
-        "ckanext.oidc_pkce_bpa.tsi_org_id": "org-123",
+        "ckanext.oidc_pkce_bpa.role_org_mapping": json.dumps({"tsi-member": ["org-123"]}),
         "ckanext.oidc_pkce_bpa.username_claim": "https://biocommons.org.au/username",
         "ckanext.oidc_pkce_bpa.register_redirect_url": "https://example.com/register",
     }

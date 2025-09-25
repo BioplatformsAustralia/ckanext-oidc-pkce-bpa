@@ -39,6 +39,8 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             raise tk.ValidationError("No access token available during get_oidc_user()!")
 
         # Apply roles → membership once, as site user (authorised context).
+        # The mapping of Auth0 roles to CKAN organisations is configured via
+        # `ckanext.oidc_pkce_bpa.role_org_mapping`.
         token_service = utils.get_token_service()
         try:
             roles = token_service.get_user_roles(access_token)
