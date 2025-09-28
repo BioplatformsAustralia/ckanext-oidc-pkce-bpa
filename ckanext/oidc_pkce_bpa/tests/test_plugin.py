@@ -9,11 +9,14 @@ import ckan.plugins.toolkit as tk
 
 from ckanext.oidc_pkce_bpa import utils
 from ckanext.oidc_pkce_bpa.plugin import OidcPkceBpaPlugin
+import ckanext.oidc_pkce_bpa.plugin as plugin_module
+from ckanext.oidc_pkce import views as oidc_views
 
 
 @pytest.fixture
 def plugin():
     """Initialise the plugin once per test."""
+    plugin_module._ORIGINAL_FORCE_LOGIN = None
     return OidcPkceBpaPlugin()
 
 
@@ -211,3 +214,96 @@ def test_blueprint_routes(plugin, mock_config, monkeypatch):
     login_response = client.get("/user/login")
     assert login_response.status_code == 302
     assert login_response.headers["Location"].endswith("/mock/oidc_pkce.login")
+
+
+def test_oidc_login_response_passthrough_user(plugin):
+    """When CKAN user sync succeeds we allow the default flow to continue."""
+    user = model.User(name="passthrough", password="dummy")
+    assert plugin.oidc_login_response(user) is None
+
+
+def test_oidc_login_response_redirects_to_login(plugin, monkeypatch):
+    """Unverified email redirects users back to the CKAN login page."""
+    fake_session = {
+        plugin_module.SESSION_CAME_FROM: "original",
+        plugin_module.SESSION_STATE: "state",
+        "other": "value",
+    }
+
+    monkeypatch.setattr(plugin_module, "session", fake_session, raising=False)
+    monkeypatch.setattr(tk, "redirect_to", lambda endpoint: f"/mock/{endpoint}")
+
+    response = SimpleNamespace(status_code=302, location="/")
+
+    result = plugin.oidc_login_response(response)
+
+    assert result == "/mock/user.login"
+    assert plugin_module.SESSION_CAME_FROM not in fake_session
+    assert plugin_module.SESSION_STATE not in fake_session
+    assert fake_session.get(plugin_module.SESSION_SKIP_OIDC) is True
+
+
+def test_callback_access_denied_redirects_to_login(monkeypatch):
+    """The patched callback keeps users on the login form for denial errors."""
+    messages = []
+    monkeypatch.setattr(
+        tk,
+        "h",
+        SimpleNamespace(flash_error=lambda msg: messages.append(msg)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tk,
+        "redirect_to",
+        lambda endpoint: redirect(f"/mock/{endpoint}"),
+    )
+
+    monkeypatch.setattr(plugin_module, "user_view", SimpleNamespace(login=lambda: "LOGIN"), raising=False)
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    app.register_blueprint(oidc_views.bp)
+
+    client = app.test_client()
+
+    with client.session_transaction() as sess:
+        sess[plugin_module.SESSION_CAME_FROM] = "original"
+        sess[plugin_module.SESSION_STATE] = "state"
+        sess[plugin_module.SESSION_VERIFIER] = "verifier"
+
+    response = client.get(
+        "/user/login/oidc-pkce/callback?error=access_denied&error_description="
+        "Email%20not%20verified"
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/mock/user.login")
+    assert messages[-1] == (
+        "Your email address is not verified. Please check your inbox, confirm your "
+        "email address and sign in again."
+    )
+
+    with client.session_transaction() as sess:
+        assert plugin_module.SESSION_CAME_FROM not in sess
+        assert plugin_module.SESSION_STATE not in sess
+        assert plugin_module.SESSION_VERIFIER not in sess
+        assert sess.get(plugin_module.SESSION_SKIP_OIDC) is True
+
+
+def test_login_route_skips_oidc_when_flag(monkeypatch):
+    """Requesting /user/login with the skip flag renders the core login view."""
+    monkeypatch.setattr(plugin_module, "user_view", SimpleNamespace(login=lambda: "LOGIN"), raising=False)
+    monkeypatch.setattr(tk, "redirect_to", lambda endpoint: f"/mock/{endpoint}")
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    app.register_blueprint(oidc_views.bp)
+
+    client = app.test_client()
+
+    with client.session_transaction() as sess:
+        sess[plugin_module.SESSION_SKIP_OIDC] = True
+
+    response = client.get("/user/login")
+
+    assert response.data == b"LOGIN"

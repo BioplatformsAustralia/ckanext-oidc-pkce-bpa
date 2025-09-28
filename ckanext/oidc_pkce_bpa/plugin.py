@@ -4,6 +4,8 @@ import uuid
 
 from . import utils
 
+from ckanext.oidc_pkce import views as oidc_views
+
 from ckan import model
 from ckan.common import session
 from ckan.plugins import SingletonPlugin, implements
@@ -11,6 +13,67 @@ from ckan.plugins.interfaces import IBlueprint
 import ckan.plugins.toolkit as tk
 
 from ckanext.oidc_pkce.interfaces import IOidcPkce
+from ckan.views import user as user_view
+
+SESSION_CAME_FROM = oidc_views.SESSION_CAME_FROM
+SESSION_STATE = oidc_views.SESSION_STATE
+SESSION_VERIFIER = oidc_views.SESSION_VERIFIER
+SESSION_SKIP_OIDC = "ckanext:oidc_pkce_bpa:skip_oidc_login"
+
+_ORIGINAL_OIDC_CALLBACK = oidc_views.callback
+_ORIGINAL_FORCE_LOGIN = None
+
+
+def _oidc_callback_with_email_check(*args, **kwargs):
+    """Intercept Auth0 "access_denied" errors to keep users on the login page."""
+    error = tk.request.args.get("error")
+    if error == "access_denied":
+        error_description = tk.request.args.get("error_description") or ""
+        message = error_description or "OIDC login was denied."
+
+        if "email" in error_description.lower() and "verif" in error_description.lower():
+            message = (
+                "Your email address is not verified. Please check your inbox, confirm your "
+                "email address and sign in again."
+            )
+
+        log.warning("OIDC callback denied access: %s", error_description or error)
+        tk.h.flash_error(message)
+        session.pop(SESSION_CAME_FROM, None)
+        session.pop(SESSION_STATE, None)
+        session.pop(SESSION_VERIFIER, None)
+        session[SESSION_SKIP_OIDC] = True
+        return tk.redirect_to("user.login")
+
+    return _ORIGINAL_OIDC_CALLBACK(*args, **kwargs)
+
+
+def _register_callback_override(state):
+    callback_endpoint = "oidc_pkce.callback"
+    state.app.view_functions[callback_endpoint] = _oidc_callback_with_email_check
+
+    force_login_endpoint = "oidc_pkce.force_oidc_login"
+    original = state.app.view_functions.get(force_login_endpoint)
+    if original is None:
+        log.warning("oidc_pkce.force_oidc_login endpoint not found; skip override")
+        return
+
+    global _ORIGINAL_FORCE_LOGIN
+    _ORIGINAL_FORCE_LOGIN = original
+    state.app.view_functions[force_login_endpoint] = _force_login_with_skip
+
+
+def _force_login_with_skip(*args, **kwargs):
+    if session.pop(SESSION_SKIP_OIDC, None):
+        return user_view.login()
+
+    if _ORIGINAL_FORCE_LOGIN is None:
+        return tk.redirect_to("oidc_pkce.login")
+
+    return _ORIGINAL_FORCE_LOGIN(*args, **kwargs)
+
+
+oidc_views.bp.record_once(_register_callback_override)
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +125,25 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         model.Session.add(user)
         model.Session.commit()
         return user
+
+    def oidc_login_response(self, user):
+        """Redirect users with login errors back to the CKAN login form."""
+        if isinstance(user, model.User):
+            return None
+
+        status_code = getattr(user, "status_code", None)
+        try:
+            status_code = int(status_code) if status_code is not None else None
+        except (TypeError, ValueError):
+            status_code = None
+
+        if status_code is None or not (300 <= status_code < 400):
+            return user
+
+        session.pop(SESSION_CAME_FROM, None)
+        session.pop(SESSION_STATE, None)
+        session[SESSION_SKIP_OIDC] = True
+        return tk.redirect_to("user.login")
 
 
     def _create_new_user(self, userinfo: dict, username: str) -> model.User:
