@@ -13,13 +13,13 @@ from ckan.plugins.interfaces import IBlueprint
 import ckan.plugins.toolkit as tk
 
 from ckanext.oidc_pkce.interfaces import IOidcPkce
-from ckan.views import user as user_view
 
 SESSION_CAME_FROM = oidc_views.SESSION_CAME_FROM
 SESSION_STATE = oidc_views.SESSION_STATE
 SESSION_VERIFIER = oidc_views.SESSION_VERIFIER
+# Kept for backwards compatibility with existing sessions/config even though the
+# extension no longer honours this flag when routing logins.
 SESSION_SKIP_OIDC = "ckanext:oidc_pkce_bpa:skip_oidc_login"
-
 _ORIGINAL_OIDC_CALLBACK = oidc_views.callback
 _ORIGINAL_FORCE_LOGIN = None
 
@@ -42,7 +42,6 @@ def _oidc_callback_with_email_check(*args, **kwargs):
         session.pop(SESSION_CAME_FROM, None)
         session.pop(SESSION_STATE, None)
         session.pop(SESSION_VERIFIER, None)
-        session[SESSION_SKIP_OIDC] = True
         return tk.redirect_to("user.login")
 
     return _ORIGINAL_OIDC_CALLBACK(*args, **kwargs)
@@ -60,13 +59,10 @@ def _register_callback_override(state):
 
     global _ORIGINAL_FORCE_LOGIN
     _ORIGINAL_FORCE_LOGIN = original
-    state.app.view_functions[force_login_endpoint] = _force_login_with_skip
+    state.app.view_functions[force_login_endpoint] = _force_login_override
 
 
-def _force_login_with_skip(*args, **kwargs):
-    if session.pop(SESSION_SKIP_OIDC, None):
-        return user_view.login()
-
+def _force_login_override(*args, **kwargs):
     if _ORIGINAL_FORCE_LOGIN is None:
         return tk.redirect_to("oidc_pkce.login")
 
@@ -142,7 +138,6 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
         session.pop(SESSION_CAME_FROM, None)
         session.pop(SESSION_STATE, None)
-        session[SESSION_SKIP_OIDC] = True
         return tk.redirect_to("user.login")
 
 

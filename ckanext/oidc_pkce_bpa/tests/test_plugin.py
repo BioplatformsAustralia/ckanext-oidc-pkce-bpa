@@ -240,7 +240,7 @@ def test_oidc_login_response_redirects_to_login(plugin, monkeypatch):
     assert result == "/mock/user.login"
     assert plugin_module.SESSION_CAME_FROM not in fake_session
     assert plugin_module.SESSION_STATE not in fake_session
-    assert fake_session.get(plugin_module.SESSION_SKIP_OIDC) is True
+    assert plugin_module.SESSION_SKIP_OIDC not in fake_session
 
 
 def test_callback_access_denied_redirects_to_login(monkeypatch):
@@ -257,8 +257,6 @@ def test_callback_access_denied_redirects_to_login(monkeypatch):
         "redirect_to",
         lambda endpoint: redirect(f"/mock/{endpoint}"),
     )
-
-    monkeypatch.setattr(plugin_module, "user_view", SimpleNamespace(login=lambda: "LOGIN"), raising=False)
 
     app = Flask(__name__)
     app.secret_key = "testing"
@@ -287,12 +285,11 @@ def test_callback_access_denied_redirects_to_login(monkeypatch):
         assert plugin_module.SESSION_CAME_FROM not in sess
         assert plugin_module.SESSION_STATE not in sess
         assert plugin_module.SESSION_VERIFIER not in sess
-        assert sess.get(plugin_module.SESSION_SKIP_OIDC) is True
+        assert plugin_module.SESSION_SKIP_OIDC not in sess
 
 
-def test_login_route_skips_oidc_when_flag(monkeypatch):
-    """Requesting /user/login with the skip flag renders the core login view."""
-    monkeypatch.setattr(plugin_module, "user_view", SimpleNamespace(login=lambda: "LOGIN"), raising=False)
+def test_login_route_always_redirects_to_oidc(monkeypatch):
+    """The login route keeps redirecting to the OIDC flow even if legacy flags exist."""
     monkeypatch.setattr(tk, "redirect_to", lambda endpoint: f"/mock/{endpoint}")
 
     app = Flask(__name__)
@@ -305,5 +302,5 @@ def test_login_route_skips_oidc_when_flag(monkeypatch):
         sess[plugin_module.SESSION_SKIP_OIDC] = True
 
     response = client.get("/user/login")
-
-    assert response.data == b"LOGIN"
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/mock/oidc_pkce.login")
