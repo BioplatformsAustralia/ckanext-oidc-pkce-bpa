@@ -16,8 +16,10 @@ from ckanext.oidc_pkce import views as oidc_views
 
 def register_oidc_blueprint(app):
     """Register the core OIDC blueprint and re-apply BPA overrides for each test app."""
+    oidc_views.bp._got_registered_once = False
     app.register_blueprint(oidc_views.bp)
-    plugin_module._register_callback_override(SimpleNamespace(app=app))
+    with app.app_context():
+        plugin_module._register_callback_override(SimpleNamespace(app=app))
 
 
 @pytest.fixture
