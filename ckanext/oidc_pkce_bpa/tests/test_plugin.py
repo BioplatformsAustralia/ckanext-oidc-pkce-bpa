@@ -14,6 +14,12 @@ import ckanext.oidc_pkce_bpa.plugin as plugin_module
 from ckanext.oidc_pkce import views as oidc_views
 
 
+def register_oidc_blueprint(app):
+    """Register the core OIDC blueprint and re-apply BPA overrides for each test app."""
+    app.register_blueprint(oidc_views.bp)
+    plugin_module._register_callback_override(SimpleNamespace(app=app))
+
+
 @pytest.fixture
 def plugin():
     """Initialise the plugin once per test."""
@@ -262,7 +268,7 @@ def test_callback_access_denied_redirects_home(monkeypatch):
 
     app = Flask(__name__)
     app.secret_key = "testing"
-    app.register_blueprint(oidc_views.bp)
+    register_oidc_blueprint(app)
 
     client = app.test_client()
 
@@ -305,7 +311,7 @@ def test_force_login_triggers_prompt_when_flagged(monkeypatch):
 
     app = Flask(__name__)
     app.secret_key = "testing"
-    app.register_blueprint(oidc_views.bp)
+    register_oidc_blueprint(app)
 
     client = app.test_client()
 
@@ -334,7 +340,7 @@ def test_login_route_always_redirects_to_oidc(monkeypatch):
 
     app = Flask(__name__)
     app.secret_key = "testing"
-    app.register_blueprint(oidc_views.bp)
+    register_oidc_blueprint(app)
 
     client = app.test_client()
 
