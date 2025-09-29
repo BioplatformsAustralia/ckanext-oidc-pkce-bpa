@@ -1,9 +1,13 @@
 from flask import Blueprint, redirect
 import logging
 import uuid
+from typing import Optional
+from urllib.parse import urlencode
 
 from . import utils
 
+from ckanext.oidc_pkce import config as oidc_config
+from ckanext.oidc_pkce import utils as oidc_utils
 from ckanext.oidc_pkce import views as oidc_views
 
 from ckan import model
@@ -20,12 +24,14 @@ SESSION_VERIFIER = oidc_views.SESSION_VERIFIER
 # Kept for backwards compatibility with existing sessions/config even though the
 # extension no longer honours this flag when routing logins.
 SESSION_SKIP_OIDC = "ckanext:oidc_pkce_bpa:skip_oidc_login"
+SESSION_FORCE_PROMPT = "ckanext:oidc_pkce_bpa:force_prompt_login"
 _ORIGINAL_OIDC_CALLBACK = oidc_views.callback
+_ORIGINAL_OIDC_LOGIN = None
 _ORIGINAL_FORCE_LOGIN = None
 
 
 def _oidc_callback_with_email_check(*args, **kwargs):
-    """Intercept Auth0 "access_denied" errors to keep users on the login page."""
+    """Intercept Auth0 "access_denied" errors to keep users on CKAN."""
     error = tk.request.args.get("error")
     if error == "access_denied":
         error_description = tk.request.args.get("error_description") or ""
@@ -42,7 +48,8 @@ def _oidc_callback_with_email_check(*args, **kwargs):
         session.pop(SESSION_CAME_FROM, None)
         session.pop(SESSION_STATE, None)
         session.pop(SESSION_VERIFIER, None)
-        return tk.redirect_to("user.login")
+        session[SESSION_FORCE_PROMPT] = True
+        return tk.redirect_to("home.index")
 
     return _ORIGINAL_OIDC_CALLBACK(*args, **kwargs)
 
@@ -50,6 +57,15 @@ def _oidc_callback_with_email_check(*args, **kwargs):
 def _register_callback_override(state):
     callback_endpoint = "oidc_pkce.callback"
     state.app.view_functions[callback_endpoint] = _oidc_callback_with_email_check
+
+    login_endpoint = "oidc_pkce.login"
+    original_login = state.app.view_functions.get(login_endpoint)
+    if original_login is None:
+        log.warning("oidc_pkce.login endpoint not found; skip override")
+    else:
+        global _ORIGINAL_OIDC_LOGIN
+        _ORIGINAL_OIDC_LOGIN = original_login
+        state.app.view_functions[login_endpoint] = _oidc_login_override
 
     force_login_endpoint = "oidc_pkce.force_oidc_login"
     original = state.app.view_functions.get(force_login_endpoint)
@@ -67,6 +83,44 @@ def _force_login_override(*args, **kwargs):
         return tk.redirect_to("oidc_pkce.login")
 
     return _ORIGINAL_FORCE_LOGIN(*args, **kwargs)
+
+
+def _oidc_login_override(*args, **kwargs):
+    if session.pop(SESSION_FORCE_PROMPT, False):
+        return _build_oidc_login_response(prompt="login")
+
+    if _ORIGINAL_OIDC_LOGIN is None:
+        return _build_oidc_login_response()
+
+    return _ORIGINAL_OIDC_LOGIN(*args, **kwargs)
+
+
+def _build_oidc_login_response(prompt: Optional[str] = None):
+    verifier = oidc_utils.code_verifier()
+    state = oidc_utils.app_state()
+    session[SESSION_VERIFIER] = verifier
+    session[SESSION_STATE] = state
+    session[SESSION_CAME_FROM] = tk.request.args.get("came_from")
+
+    params = {
+        "client_id": oidc_config.client_id(),
+        "redirect_uri": oidc_config.redirect_url(),
+        "scope": oidc_config.scope(),
+        "state": state,
+        "code_challenge": oidc_utils.code_challenge(verifier),
+        "code_challenge_method": "S256",
+        "response_type": "code",
+        "response_mode": "query",
+    }
+    if prompt:
+        params["prompt"] = prompt
+
+    url = f"{oidc_config.auth_url()}?{urlencode(params)}"
+    resp = redirect(url)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 oidc_views.bp.record_once(_register_callback_override)
@@ -123,7 +177,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         return user
 
     def oidc_login_response(self, user):
-        """Redirect users with login errors back to the CKAN login form."""
+        """Redirect users with login errors back to the CKAN site."""
         if isinstance(user, model.User):
             return None
 
@@ -138,7 +192,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
         session.pop(SESSION_CAME_FROM, None)
         session.pop(SESSION_STATE, None)
-        return tk.redirect_to("user.login")
+        return tk.redirect_to("home.index")
 
 
     def _create_new_user(self, userinfo: dict, username: str) -> model.User:

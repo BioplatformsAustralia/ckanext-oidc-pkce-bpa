@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from flask import Flask, redirect
@@ -17,6 +18,7 @@ from ckanext.oidc_pkce import views as oidc_views
 def plugin():
     """Initialise the plugin once per test."""
     plugin_module._ORIGINAL_FORCE_LOGIN = None
+    plugin_module._ORIGINAL_OIDC_LOGIN = None
     return OidcPkceBpaPlugin()
 
 
@@ -222,8 +224,8 @@ def test_oidc_login_response_passthrough_user(plugin):
     assert plugin.oidc_login_response(user) is None
 
 
-def test_oidc_login_response_redirects_to_login(plugin, monkeypatch):
-    """Unverified email redirects users back to the CKAN login page."""
+def test_oidc_login_response_redirects_home(plugin, monkeypatch):
+    """Unverified email keeps users on CKAN instead of re-triggering OIDC."""
     fake_session = {
         plugin_module.SESSION_CAME_FROM: "original",
         plugin_module.SESSION_STATE: "state",
@@ -237,14 +239,14 @@ def test_oidc_login_response_redirects_to_login(plugin, monkeypatch):
 
     result = plugin.oidc_login_response(response)
 
-    assert result == "/mock/user.login"
+    assert result == "/mock/home.index"
     assert plugin_module.SESSION_CAME_FROM not in fake_session
     assert plugin_module.SESSION_STATE not in fake_session
     assert plugin_module.SESSION_SKIP_OIDC not in fake_session
 
 
-def test_callback_access_denied_redirects_to_login(monkeypatch):
-    """The patched callback keeps users on the login form for denial errors."""
+def test_callback_access_denied_redirects_home(monkeypatch):
+    """The patched callback keeps denial errors on CKAN rather than Auth0."""
     messages = []
     monkeypatch.setattr(
         tk,
@@ -275,7 +277,7 @@ def test_callback_access_denied_redirects_to_login(monkeypatch):
     )
 
     assert response.status_code == 302
-    assert response.headers["Location"].endswith("/mock/user.login")
+    assert response.headers["Location"].endswith("/mock/home.index")
     assert messages[-1] == (
         "Your email address is not verified. Please check your inbox, confirm your "
         "email address and sign in again."
@@ -285,7 +287,45 @@ def test_callback_access_denied_redirects_to_login(monkeypatch):
         assert plugin_module.SESSION_CAME_FROM not in sess
         assert plugin_module.SESSION_STATE not in sess
         assert plugin_module.SESSION_VERIFIER not in sess
+        assert sess[plugin_module.SESSION_FORCE_PROMPT] is True
         assert plugin_module.SESSION_SKIP_OIDC not in sess
+
+
+
+
+def test_force_login_triggers_prompt_when_flagged(monkeypatch):
+    """SSO denial forces the next login attempt to show the Auth0 prompt."""
+    monkeypatch.setattr(plugin_module.oidc_config, "client_id", lambda: "cid")
+    monkeypatch.setattr(plugin_module.oidc_config, "redirect_url", lambda: "https://ckan.example.com/callback")
+    monkeypatch.setattr(plugin_module.oidc_config, "scope", lambda: "openid profile email")
+    monkeypatch.setattr(plugin_module.oidc_config, "auth_url", lambda: "https://auth.example.com/authorize")
+    monkeypatch.setattr(plugin_module.oidc_utils, "code_verifier", lambda: "verifier")
+    monkeypatch.setattr(plugin_module.oidc_utils, "app_state", lambda: "appstate")
+    monkeypatch.setattr(plugin_module.oidc_utils, "code_challenge", lambda _verifier: "challenge")
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    app.register_blueprint(oidc_views.bp)
+
+    client = app.test_client()
+
+    with client.session_transaction() as sess:
+        sess[plugin_module.SESSION_FORCE_PROMPT] = True
+
+    response = client.get("/user/login?came_from=/dataset")
+    assert response.status_code == 302
+
+    parsed = urlparse(response.headers["Location"])
+    query = parse_qs(parsed.query)
+    assert query.get("prompt") == ["login"]
+    assert query.get("state") == ["appstate"]
+    assert query.get("code_challenge") == ["challenge"]
+
+    with client.session_transaction() as sess:
+        assert plugin_module.SESSION_FORCE_PROMPT not in sess
+        assert sess[plugin_module.SESSION_STATE] == "appstate"
+        assert sess[plugin_module.SESSION_CAME_FROM] == "/dataset"
+        assert sess[plugin_module.SESSION_VERIFIER] == "verifier"
 
 
 def test_login_route_always_redirects_to_oidc(monkeypatch):
