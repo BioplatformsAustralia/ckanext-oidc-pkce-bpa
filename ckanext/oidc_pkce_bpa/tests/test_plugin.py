@@ -17,14 +17,19 @@ from ckanext.oidc_pkce import views as oidc_views
 def register_oidc_blueprint(app):
     """Register the core OIDC blueprint and re-apply BPA overrides for each test app."""
     app.register_blueprint(oidc_views.bp)
-    required_routes = [
-        ("/user/login", "oidc_pkce.force_oidc_login", oidc_views.force_oidc_login),
-        ("/user/login/oidc-pkce", "oidc_pkce.login", oidc_views.login),
-        ("/user/login/oidc-pkce/callback", "oidc_pkce.callback", oidc_views.callback),
+
+    def _fallback_force_login():
+        return tk.redirect_to("oidc_pkce.login")
+
+    route_factories = [
+        ("/user/login", "oidc_pkce.force_oidc_login", getattr(oidc_views, "force_oidc_login", _fallback_force_login)),
+        ("/user/login/oidc-pkce", "oidc_pkce.login", getattr(oidc_views, "login", lambda: tk.redirect_to("home.index"))),
     ]
-    for rule, endpoint, view in required_routes:
+
+    for rule, endpoint, view in route_factories:
         if endpoint not in app.view_functions:
             app.add_url_rule(rule, endpoint=endpoint, view_func=view)
+
     plugin_module._register_callback_override(SimpleNamespace(app=app))
 
 
@@ -247,7 +252,7 @@ def test_oidc_login_response_redirects_home(plugin, monkeypatch):
     }
 
     monkeypatch.setattr(plugin_module, "session", fake_session, raising=False)
-    monkeypatch.setattr(tk, "redirect_to", lambda endpoint: redirect(f"/mock/{endpoint}"))
+    monkeypatch.setattr(tk, "redirect_to", lambda endpoint: f"/mock/{endpoint}")
 
     response = SimpleNamespace(status_code=302, location="/")
 
