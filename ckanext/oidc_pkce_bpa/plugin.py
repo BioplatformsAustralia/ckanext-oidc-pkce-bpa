@@ -79,10 +79,23 @@ def _register_callback_override(state):
 
 
 def _force_login_override(*args, **kwargs):
-    if _ORIGINAL_FORCE_LOGIN is None:
-        return tk.redirect_to("oidc_pkce.login")
+    # If the previous login attempt was denied, force the Auth0 prompt.
+    if session.pop(SESSION_FORCE_PROMPT, False):
+        return _build_oidc_login_response(prompt="login")
 
-    return _ORIGINAL_FORCE_LOGIN(*args, **kwargs)
+    # Fall back to the original force-login view when present, otherwise mimic
+    # that behaviour.
+    if _ORIGINAL_FORCE_LOGIN is not None:
+        response = _ORIGINAL_FORCE_LOGIN(*args, **kwargs)
+    else:
+        response = tk.redirect_to("oidc_pkce.login")
+
+    # The original force-login handler may return a plain string (e.g. when
+    # tests stub `tk.redirect_to`). Normalise that into a proper redirect.
+    if isinstance(response, str):
+        return redirect(response)
+
+    return response
 
 
 def _oidc_login_override(*args, **kwargs):
