@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from flask import Flask, redirect
@@ -9,11 +10,34 @@ import ckan.plugins.toolkit as tk
 
 from ckanext.oidc_pkce_bpa import utils
 from ckanext.oidc_pkce_bpa.plugin import OidcPkceBpaPlugin
+import ckanext.oidc_pkce_bpa.plugin as plugin_module
+from ckanext.oidc_pkce import views as oidc_views
+
+
+def register_oidc_blueprint(app):
+    """Register the core OIDC blueprint and re-apply BPA overrides for each test app."""
+    app.register_blueprint(oidc_views.bp)
+
+    def _fallback_force_login():
+        return tk.redirect_to("oidc_pkce.login")
+
+    route_factories = [
+        ("/user/login", "oidc_pkce.force_oidc_login", getattr(oidc_views, "force_oidc_login", _fallback_force_login)),
+        ("/user/login/oidc-pkce", "oidc_pkce.login", getattr(oidc_views, "login", lambda: tk.redirect_to("home.index"))),
+    ]
+
+    for rule, endpoint, view in route_factories:
+        if endpoint not in app.view_functions:
+            app.add_url_rule(rule, endpoint=endpoint, view_func=view)
+
+    plugin_module._register_callback_override(SimpleNamespace(app=app))
 
 
 @pytest.fixture
 def plugin():
     """Initialise the plugin once per test."""
+    plugin_module._ORIGINAL_FORCE_LOGIN = None
+    plugin_module._ORIGINAL_OIDC_LOGIN = None
     return OidcPkceBpaPlugin()
 
 
@@ -211,3 +235,131 @@ def test_blueprint_routes(plugin, mock_config, monkeypatch):
     login_response = client.get("/user/login")
     assert login_response.status_code == 302
     assert login_response.headers["Location"].endswith("/mock/oidc_pkce.login")
+
+
+def test_oidc_login_response_passthrough_user(plugin):
+    """When CKAN user sync succeeds we allow the default flow to continue."""
+    user = model.User(name="passthrough", password="dummy")
+    assert plugin.oidc_login_response(user) is None
+
+
+def test_oidc_login_response_redirects_home(plugin, monkeypatch):
+    """Unverified email keeps users on CKAN instead of re-triggering OIDC."""
+    fake_session = {
+        plugin_module.SESSION_CAME_FROM: "original",
+        plugin_module.SESSION_STATE: "state",
+        "other": "value",
+    }
+
+    monkeypatch.setattr(plugin_module, "session", fake_session, raising=False)
+    monkeypatch.setattr(tk, "redirect_to", lambda endpoint: f"/mock/{endpoint}")
+
+    response = SimpleNamespace(status_code=302, location="/")
+
+    result = plugin.oidc_login_response(response)
+
+    assert result == "/mock/home.index"
+    assert plugin_module.SESSION_CAME_FROM not in fake_session
+    assert plugin_module.SESSION_STATE not in fake_session
+    assert plugin_module.SESSION_SKIP_OIDC not in fake_session
+
+
+def test_callback_access_denied_redirects_home(monkeypatch):
+    """The patched callback keeps denial errors on CKAN rather than Auth0."""
+    messages = []
+    monkeypatch.setattr(
+        tk,
+        "h",
+        SimpleNamespace(flash_error=lambda msg: messages.append(msg)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tk,
+        "redirect_to",
+        lambda endpoint: redirect(f"/mock/{endpoint}"),
+    )
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    register_oidc_blueprint(app)
+
+    client = app.test_client()
+
+    with client.session_transaction() as sess:
+        sess[plugin_module.SESSION_CAME_FROM] = "original"
+        sess[plugin_module.SESSION_STATE] = "state"
+        sess[plugin_module.SESSION_VERIFIER] = "verifier"
+
+    response = client.get(
+        "/user/login/oidc-pkce/callback?error=access_denied&error_description="
+        "Email%20not%20verified"
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/mock/home.index")
+    assert messages[-1] == (
+        "Your email address is not verified. Please check your inbox, confirm your "
+        "email address and sign in again."
+    )
+
+    with client.session_transaction() as sess:
+        assert plugin_module.SESSION_CAME_FROM not in sess
+        assert plugin_module.SESSION_STATE not in sess
+        assert plugin_module.SESSION_VERIFIER not in sess
+        assert sess[plugin_module.SESSION_FORCE_PROMPT] is True
+        assert plugin_module.SESSION_SKIP_OIDC not in sess
+
+
+
+
+def test_force_login_triggers_prompt_when_flagged(monkeypatch):
+    """SSO denial forces the next login attempt to show the Auth0 prompt."""
+    monkeypatch.setattr(plugin_module.oidc_config, "client_id", lambda: "cid")
+    monkeypatch.setattr(plugin_module.oidc_config, "redirect_url", lambda: "https://ckan.example.com/callback")
+    monkeypatch.setattr(plugin_module.oidc_config, "scope", lambda: "openid profile email")
+    monkeypatch.setattr(plugin_module.oidc_config, "auth_url", lambda: "https://auth.example.com/authorize")
+    monkeypatch.setattr(plugin_module.oidc_utils, "code_verifier", lambda: "verifier")
+    monkeypatch.setattr(plugin_module.oidc_utils, "app_state", lambda: "appstate")
+    monkeypatch.setattr(plugin_module.oidc_utils, "code_challenge", lambda _verifier: "challenge")
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    register_oidc_blueprint(app)
+
+    client = app.test_client()
+
+    with client.session_transaction() as sess:
+        sess[plugin_module.SESSION_FORCE_PROMPT] = True
+
+    response = client.get("/user/login?came_from=/dataset")
+    assert response.status_code == 302
+
+    parsed = urlparse(response.headers["Location"])
+    query = parse_qs(parsed.query)
+    assert query.get("prompt") == ["login"]
+    assert query.get("state") == ["appstate"]
+    assert query.get("code_challenge") == ["challenge"]
+
+    with client.session_transaction() as sess:
+        assert plugin_module.SESSION_FORCE_PROMPT not in sess
+        assert sess[plugin_module.SESSION_STATE] == "appstate"
+        assert sess[plugin_module.SESSION_CAME_FROM] == "/dataset"
+        assert sess[plugin_module.SESSION_VERIFIER] == "verifier"
+
+
+def test_login_route_always_redirects_to_oidc(monkeypatch):
+    """The login route keeps redirecting to the OIDC flow even if legacy flags exist."""
+    monkeypatch.setattr(tk, "redirect_to", lambda endpoint: f"/mock/{endpoint}")
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    register_oidc_blueprint(app)
+
+    client = app.test_client()
+
+    with client.session_transaction() as sess:
+        sess[plugin_module.SESSION_SKIP_OIDC] = True
+
+    response = client.get("/user/login")
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/mock/oidc_pkce.login")

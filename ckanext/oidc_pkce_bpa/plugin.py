@@ -1,8 +1,14 @@
 from flask import Blueprint, redirect
 import logging
 import uuid
+from typing import Optional
+from urllib.parse import urlencode
 
 from . import utils
+
+from ckanext.oidc_pkce import config as oidc_config
+from ckanext.oidc_pkce import utils as oidc_utils
+from ckanext.oidc_pkce import views as oidc_views
 
 from ckan import model
 from ckan.common import session
@@ -11,6 +17,126 @@ from ckan.plugins.interfaces import IBlueprint
 import ckan.plugins.toolkit as tk
 
 from ckanext.oidc_pkce.interfaces import IOidcPkce
+
+SESSION_CAME_FROM = oidc_views.SESSION_CAME_FROM
+SESSION_STATE = oidc_views.SESSION_STATE
+SESSION_VERIFIER = oidc_views.SESSION_VERIFIER
+# Kept for backwards compatibility with existing sessions/config even though the
+# extension no longer honours this flag when routing logins.
+SESSION_SKIP_OIDC = "ckanext:oidc_pkce_bpa:skip_oidc_login"
+SESSION_FORCE_PROMPT = "ckanext:oidc_pkce_bpa:force_prompt_login"
+_ORIGINAL_OIDC_CALLBACK = oidc_views.callback
+_ORIGINAL_OIDC_LOGIN = None
+_ORIGINAL_FORCE_LOGIN = None
+
+
+def _oidc_callback_with_email_check(*args, **kwargs):
+    """Intercept Auth0 "access_denied" errors to keep users on CKAN."""
+    error = tk.request.args.get("error")
+    if error == "access_denied":
+        error_description = tk.request.args.get("error_description") or ""
+        message = error_description or "OIDC login was denied."
+
+        if "email" in error_description.lower() and "verif" in error_description.lower():
+            message = (
+                "Your email address is not verified. Please check your inbox, confirm your "
+                "email address and sign in again."
+            )
+
+        log.warning("OIDC callback denied access: %s", error_description or error)
+        tk.h.flash_error(message)
+        session.pop(SESSION_CAME_FROM, None)
+        session.pop(SESSION_STATE, None)
+        session.pop(SESSION_VERIFIER, None)
+        session[SESSION_FORCE_PROMPT] = True
+        return tk.redirect_to("home.index")
+
+    return _ORIGINAL_OIDC_CALLBACK(*args, **kwargs)
+
+
+def _register_callback_override(state):
+    callback_endpoint = "oidc_pkce.callback"
+    state.app.view_functions[callback_endpoint] = _oidc_callback_with_email_check
+
+    login_endpoint = "oidc_pkce.login"
+    original_login = state.app.view_functions.get(login_endpoint)
+    if original_login is None:
+        log.warning("oidc_pkce.login endpoint not found; skip override")
+    else:
+        global _ORIGINAL_OIDC_LOGIN
+        _ORIGINAL_OIDC_LOGIN = original_login
+        state.app.view_functions[login_endpoint] = _oidc_login_override
+
+    force_login_endpoint = "oidc_pkce.force_oidc_login"
+    original = state.app.view_functions.get(force_login_endpoint)
+    if original is None:
+        log.warning("oidc_pkce.force_oidc_login endpoint not found; skip override")
+        return
+
+    global _ORIGINAL_FORCE_LOGIN
+    _ORIGINAL_FORCE_LOGIN = original
+    state.app.view_functions[force_login_endpoint] = _force_login_override
+
+
+def _force_login_override(*args, **kwargs):
+    # If the previous login attempt was denied, force the Auth0 prompt.
+    if session.pop(SESSION_FORCE_PROMPT, False):
+        return _build_oidc_login_response(prompt="login")
+
+    # Fall back to the original force-login view when present, otherwise mimic
+    # that behaviour.
+    if _ORIGINAL_FORCE_LOGIN is not None:
+        response = _ORIGINAL_FORCE_LOGIN(*args, **kwargs)
+    else:
+        response = tk.redirect_to("oidc_pkce.login")
+
+    # The original force-login handler may return a plain string (e.g. when
+    # tests stub `tk.redirect_to`). Normalise that into a proper redirect.
+    if isinstance(response, str):
+        return redirect(response)
+
+    return response
+
+
+def _oidc_login_override(*args, **kwargs):
+    if session.pop(SESSION_FORCE_PROMPT, False):
+        return _build_oidc_login_response(prompt="login")
+
+    if _ORIGINAL_OIDC_LOGIN is None:
+        return _build_oidc_login_response()
+
+    return _ORIGINAL_OIDC_LOGIN(*args, **kwargs)
+
+
+def _build_oidc_login_response(prompt: Optional[str] = None):
+    verifier = oidc_utils.code_verifier()
+    state = oidc_utils.app_state()
+    session[SESSION_VERIFIER] = verifier
+    session[SESSION_STATE] = state
+    session[SESSION_CAME_FROM] = tk.request.args.get("came_from")
+
+    params = {
+        "client_id": oidc_config.client_id(),
+        "redirect_uri": oidc_config.redirect_url(),
+        "scope": oidc_config.scope(),
+        "state": state,
+        "code_challenge": oidc_utils.code_challenge(verifier),
+        "code_challenge_method": "S256",
+        "response_type": "code",
+        "response_mode": "query",
+    }
+    if prompt:
+        params["prompt"] = prompt
+
+    url = f"{oidc_config.auth_url()}?{urlencode(params)}"
+    resp = redirect(url)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
+oidc_views.bp.record_once(_register_callback_override)
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +188,24 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         model.Session.add(user)
         model.Session.commit()
         return user
+
+    def oidc_login_response(self, user):
+        """Redirect users with login errors back to the CKAN site."""
+        if isinstance(user, model.User):
+            return None
+
+        status_code = getattr(user, "status_code", None)
+        try:
+            status_code = int(status_code) if status_code is not None else None
+        except (TypeError, ValueError):
+            status_code = None
+
+        if status_code is None or not (300 <= status_code < 400):
+            return user
+
+        session.pop(SESSION_CAME_FROM, None)
+        session.pop(SESSION_STATE, None)
+        return tk.redirect_to("home.index")
 
 
     def _create_new_user(self, userinfo: dict, username: str) -> model.User:
