@@ -16,7 +16,7 @@ Compatibility with core CKAN versions:
 | 2.7             | not tested    |
 | 2.8             | not tested    |
 | 2.9             | yes           |
-| 2.10            | not yet       |
+| 2.10            | yes           |
 
 Suggested values:
 
@@ -27,10 +27,6 @@ Suggested values:
 
 
 ## Installation
-
-**TODO:** Add any additional install steps to the list below.
-   For example installing any non-Python dependencies or adding any required
-   config settings.
 
 To install ckanext-oidc-pkce-bpa:
 
@@ -114,6 +110,30 @@ If ckanext-oidc-pkce-bpa should be available on PyPI you can follow these steps 
 
        git tag 0.0.1
        git push --tags
+
+## Development notes: Redirect Behavior on Auth0 Callback Errors
+
+When the Auth0 OIDC callback denies access (for example, if a user cancels login or an authorization error occurs), this extension intentionally redirects the user to `home.index` instead of `/user/login` ([see source](./ckanext/oidc_pkce_bpa/plugin.py)):
+
+```python
+session.pop(SESSION_STATE, None)
+session.pop(SESSION_VERIFIER, None)
+session[SESSION_FORCE_PROMPT] = True
+return tk.redirect_to("home.index")
+```
+
+#### Rationale
+
+The `/user/login` route in this extension is overridden to immediately start the OIDC login flow.
+If a user is redirected there after an Auth0 error, it would immediately trigger another OIDC login attempt, creating an infinite redirect loop and preventing the user from ever seeing the flashed error message.
+
+Redirecting to `home.index` provides a stable landing point on the CKAN front page, allowing the user to:
+- See the flashed error banner
+- Recover gracefully
+- Decide whether to retry login or navigate elsewhere.
+
+This design ensures that OIDC errors are surfaced clearly to the user while avoiding repeated automatic login attempts.
+
 
 ## License
 
