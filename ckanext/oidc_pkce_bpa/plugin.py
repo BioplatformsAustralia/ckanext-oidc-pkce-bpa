@@ -1,4 +1,4 @@
-from flask import Blueprint, redirect
+from flask import Blueprint, redirect, request
 import logging
 import uuid
 from typing import Optional
@@ -10,10 +10,11 @@ from ckanext.oidc_pkce import config as oidc_config
 from ckanext.oidc_pkce import utils as oidc_utils
 from ckanext.oidc_pkce import views as oidc_views
 
-from ckan import model
-from ckan.common import session
+from ckan import authz, model
+from ckan.common import g, session
+from ckan.lib import base
 from ckan.plugins import SingletonPlugin, implements
-from ckan.plugins.interfaces import IBlueprint
+from ckan.plugins.interfaces import IBlueprint, IAuthenticator
 import ckan.plugins.toolkit as tk
 
 from ckanext.oidc_pkce.interfaces import IOidcPkce
@@ -28,6 +29,8 @@ SESSION_FORCE_PROMPT = "ckanext:oidc_pkce_bpa:force_prompt_login"
 _ORIGINAL_OIDC_CALLBACK = oidc_views.callback
 _ORIGINAL_OIDC_LOGIN = None
 _ORIGINAL_FORCE_LOGIN = None
+SESSION_ADMIN_LOGIN_TOKEN = "ckanext:oidc_pkce_bpa:admin_login_token"
+SESSION_ADMIN_LOGIN_TARGET = "ckanext:oidc_pkce_bpa:admin_login_target"
 
 
 def _oidc_callback_with_email_check(*args, **kwargs):
@@ -138,11 +141,69 @@ def _build_oidc_login_response(prompt: Optional[str] = None):
 
 oidc_views.bp.record_once(_register_callback_override)
 
+admin_bp = Blueprint("oidc_pkce_bpa", __name__)
+
 log = logging.getLogger(__name__)
+
+
+@admin_bp.route("/user/admin/login")
+def admin_login():
+    """Entry point for sysadmins needing the legacy CKAN login form."""
+    if g.user:
+        return base.render("user/logout_first.html", {})
+
+    token = uuid.uuid4().hex
+    session[SESSION_ADMIN_LOGIN_TOKEN] = token
+
+    requested_target = request.args.get("came_from")
+    if requested_target and tk.h.url_is_local(requested_target):
+        session[SESSION_ADMIN_LOGIN_TARGET] = requested_target
+    else:
+        session.pop(SESSION_ADMIN_LOGIN_TARGET, None)
+        if requested_target:
+            log.warning("Ignored non-local admin login target: %s", requested_target)
+
+    return tk.redirect_to(
+        "user.login",
+        admin_token=token,
+        came_from=tk.url_for("oidc_pkce_bpa.admin_login_complete", token=token),
+    )
+
+
+@admin_bp.route("/user/admin/logged-in")
+def admin_login_complete():
+    """Validate admin login attempts and restrict access to sysadmins."""
+    token = request.args.get("token")
+    stored_token = session.get(SESSION_ADMIN_LOGIN_TOKEN)
+
+    if not stored_token or stored_token != token:
+        session.pop(SESSION_ADMIN_LOGIN_TOKEN, None)
+        session.pop(SESSION_ADMIN_LOGIN_TARGET, None)
+        tk.h.flash_error("The admin login session expired. Please try again.")
+        return tk.redirect_to("oidc_pkce_bpa.admin_login")
+
+    if not g.user:
+        tk.h.flash_error("Login failed. Bad username or password.")
+        return tk.redirect_to("oidc_pkce_bpa.admin_login")
+
+    if not authz.is_sysadmin(g.user):
+        session.pop(SESSION_ADMIN_LOGIN_TOKEN, None)
+        session.pop(SESSION_ADMIN_LOGIN_TARGET, None)
+        tk.h.flash_error("Only CKAN sysadmins may use the admin login.")
+        return tk.redirect_to("user.logout")
+
+    redirect_target = session.pop(SESSION_ADMIN_LOGIN_TARGET, None)
+    session.pop(SESSION_ADMIN_LOGIN_TOKEN, None)
+
+    if redirect_target and tk.h.url_is_local(redirect_target):
+        return tk.redirect_to(redirect_target)
+
+    return tk.redirect_to("admin.index")
 
 
 class OidcPkceBpaPlugin(SingletonPlugin):
     implements(IOidcPkce, inherit=True)
+    implements(IAuthenticator, inherit=True)
     implements(IBlueprint)
 
     def get_oidc_user(self, userinfo: dict) -> model.User:
@@ -207,6 +268,29 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         session.pop(SESSION_STATE, None)
         return tk.redirect_to("home.index")
 
+    # IAuthenticator
+
+    def login(self):
+        login_path = tk.url_for("user.login")
+        if tk.request.path != login_path:
+            return None
+
+        admin_token = tk.request.args.get("admin_token")
+        session_token = session.get(SESSION_ADMIN_LOGIN_TOKEN)
+        if admin_token and session_token and admin_token == session_token:
+            return None
+
+        return tk.redirect_to("oidc_pkce.force_oidc_login")
+
+    def logout(self):
+        session.pop(SESSION_ADMIN_LOGIN_TOKEN, None)
+        session.pop(SESSION_ADMIN_LOGIN_TARGET, None)
+        return None
+
+    # IBlueprint
+
+    def get_blueprint(self):
+        return [admin_bp]
 
     def _create_new_user(self, userinfo: dict, username: str) -> model.User:
         # Generate a random UUID-based placeholder password that CKAN won't accept
@@ -240,17 +324,17 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             log.info("Updating fullname for '%s' to '%s'", user.name, updated_fullname)
             user.fullname = updated_fullname
 
-    def get_blueprint(self):
-        bp = Blueprint("oidc_pkce_bpa", __name__)
+    # def get_blueprint(self):
+    #     bp = Blueprint("oidc_pkce_bpa", __name__)
 
-        @bp.route("/user/register")
-        def force_oidc_register():
-            # hard-redirect to AAI portal user registration page
-            return redirect(utils.get_redirect_registeration_url())
+    #     @bp.route("/user/register")
+    #     def force_oidc_register():
+    #         # hard-redirect to AAI portal user registration page
+    #         return redirect(utils.get_redirect_registeration_url())
     
-        @bp.route("/user/login")
-        def force_oidc_login():
-            # redirect into OIDC login route inside CKAN
-            return tk.redirect_to("oidc_pkce.login")
+    #     @bp.route("/user/login")
+    #     def force_oidc_login():
+    #         # redirect into OIDC login route inside CKAN
+    #         return tk.redirect_to("oidc_pkce.login")
     
-        return bp
+    #     return bp
