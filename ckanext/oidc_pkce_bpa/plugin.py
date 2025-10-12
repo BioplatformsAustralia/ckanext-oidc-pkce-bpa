@@ -12,7 +12,6 @@ from ckanext.oidc_pkce import views as oidc_views
 
 from ckan import authz, model
 from ckan.common import g, session
-from ckan.lib import base
 from ckan.plugins import SingletonPlugin, implements
 from ckan.plugins.interfaces import IBlueprint, IAuthenticator
 import ckan.plugins.toolkit as tk
@@ -150,7 +149,11 @@ log = logging.getLogger(__name__)
 def admin_login():
     """Entry point for sysadmins needing the legacy CKAN login form."""
     if g.user:
-        return base.render("user/logout_first.html", {})
+        tk.h.flash_notice("Logging you out before opening the admin login form.")
+        return tk.redirect_to(
+            "user.logout",
+            came_from=tk.url_for("oidc_pkce_bpa.admin_login"),
+        )
 
     token = uuid.uuid4().hex
     session[SESSION_ADMIN_LOGIN_TOKEN] = token

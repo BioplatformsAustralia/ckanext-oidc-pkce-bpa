@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from flask import Flask, redirect
+from flask import Flask, g, redirect, url_for
 from ckan import model
 import ckan.plugins.toolkit as tk
 
@@ -218,24 +218,323 @@ def test_missing_access_token_raises(plugin, mock_services):
     mock_services.membership_service.apply_role_based_memberships.assert_not_called()
 
 
-def test_blueprint_routes(plugin, mock_config, monkeypatch):
-    """Blueprint routes perform the expected redirects."""
-    blueprint = plugin.get_blueprint()
+def test_admin_login_blueprint_routes(plugin, mock_config, monkeypatch):
+    """Admin blueprint redirects to legacy login with a one-time token."""
     app = Flask(__name__)
-    app.register_blueprint(blueprint)
+    app.secret_key = "testing"
 
-    monkeypatch.setattr(tk, "redirect_to", lambda endpoint: redirect(f"/mock/{endpoint}"))
+    blueprint = plugin.get_blueprint()
+    for bp in blueprint:
+        app.register_blueprint(bp)
+
+    app.add_url_rule("/user/login", endpoint="user.login", view_func=lambda: "login")
+    app.add_url_rule("/user/logout", endpoint="user.logout", view_func=lambda: "logout")
+    app.add_url_rule("/ckan-admin", endpoint="admin.index", view_func=lambda: "admin")
+
+    monkeypatch.setattr(
+        tk,
+        "url_for",
+        lambda endpoint, **values: url_for(endpoint, **values),
+    )
+
+    def _redirect_to(endpoint, **values):
+        if endpoint.startswith(("http://", "https://", "/")):
+            return redirect(endpoint)
+        return redirect(url_for(endpoint, **values))
+
+    monkeypatch.setattr(tk, "redirect_to", _redirect_to)
+    messages = []
+    monkeypatch.setattr(
+        tk,
+        "h",
+        SimpleNamespace(
+            url_is_local=lambda url: url.startswith("/"),
+            flash_notice=lambda msg: messages.append(("notice", msg)),
+            flash_error=lambda msg: messages.append(("error", msg)),
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
 
     client = app.test_client()
 
-    register_response = client.get("/user/register")
-    assert register_response.status_code == 302
-    assert register_response.headers["Location"] == "https://example.com/register"
+    response = client.get("/user/admin/login?came_from=/ckan-admin")
+    assert response.status_code == 302
 
-    login_response = client.get("/user/login")
-    assert login_response.status_code == 302
-    assert login_response.headers["Location"].endswith("/mock/oidc_pkce.login")
+    parsed = urlparse(response.headers["Location"])
+    assert parsed.path == "/user/login"
+    token = parse_qs(parsed.query)["admin_token"][0]
+    assert plugin_module.session[plugin_module.SESSION_ADMIN_LOGIN_TOKEN] == token
+    assert plugin_module.session[plugin_module.SESSION_ADMIN_LOGIN_TARGET] == "/ckan-admin"
 
+    # Non-local target is ignored
+    response = client.get("/user/admin/login?came_from=https://evil.example.com")
+    assert response.status_code == 302
+    assert plugin_module.SESSION_ADMIN_LOGIN_TARGET not in plugin_module.session
+
+
+def test_admin_login_logs_out_active_session(plugin, mock_config, monkeypatch):
+    """Logged-in users are logged out before seeing the admin login form."""
+    app = Flask(__name__)
+    app.secret_key = "testing"
+
+    for bp in plugin.get_blueprint():
+        app.register_blueprint(bp)
+
+    app.add_url_rule("/user/logout", endpoint="user.logout", view_func=lambda: "logout")
+
+    monkeypatch.setattr(
+        tk,
+        "url_for",
+        lambda endpoint, **values: url_for(endpoint, **values),
+    )
+
+    def _redirect_to(endpoint, **values):
+        return redirect(url_for(endpoint, **values))
+
+    monkeypatch.setattr(tk, "redirect_to", _redirect_to)
+    messages = []
+    monkeypatch.setattr(
+        tk,
+        "h",
+        SimpleNamespace(
+            url_is_local=lambda url: True,
+            flash_notice=lambda msg: messages.append(("notice", msg)),
+            flash_error=lambda msg: messages.append(("error", msg)),
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
+
+    with app.test_request_context("/user/admin/login"):
+        g.user = "sysadmin"
+        response = app.view_functions["oidc_pkce_bpa.admin_login"]()
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == url_for("user.logout", came_from="/user/admin/login")
+    assert messages == [("notice", "Logging you out before opening the admin login form.")]
+
+
+def test_admin_login_complete_allows_sysadmin(plugin, mock_config, monkeypatch):
+    """Sysadmins completing login are redirected to their requested target."""
+    app = Flask(__name__)
+    app.secret_key = "testing"
+
+    for bp in plugin.get_blueprint():
+        app.register_blueprint(bp)
+
+    app.add_url_rule("/ckan-admin", endpoint="admin.index", view_func=lambda: "admin")
+
+    monkeypatch.setattr(
+        tk,
+        "url_for",
+        lambda endpoint, **values: url_for(endpoint, **values),
+    )
+    def _redirect_to(endpoint, **values):
+        if endpoint.startswith(("http://", "https://", "/")):
+            return redirect(endpoint)
+        return redirect(url_for(endpoint, **values))
+
+    monkeypatch.setattr(tk, "redirect_to", _redirect_to)
+    messages = []
+    monkeypatch.setattr(
+        tk,
+        "h",
+        SimpleNamespace(
+            url_is_local=lambda url: url.startswith("/"),
+            flash_notice=lambda msg: messages.append(("notice", msg)),
+            flash_error=lambda msg: messages.append(("error", msg)),
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
+    monkeypatch.setattr(plugin_module.authz, "is_sysadmin", lambda user: True)
+
+    token = "abc123"
+    plugin_module.session[plugin_module.SESSION_ADMIN_LOGIN_TOKEN] = token
+    plugin_module.session[plugin_module.SESSION_ADMIN_LOGIN_TARGET] = "/ckan-admin"
+
+    with app.test_request_context(f"/user/admin/logged-in?token={token}"):
+        g.user = "sysadmin"
+        response = app.view_functions["oidc_pkce_bpa.admin_login_complete"]()
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == url_for("admin.index")
+    assert plugin_module.SESSION_ADMIN_LOGIN_TOKEN not in plugin_module.session
+    assert plugin_module.SESSION_ADMIN_LOGIN_TARGET not in plugin_module.session
+    assert messages == []
+
+
+def test_admin_login_complete_rejects_non_sysadmin(plugin, mock_config, monkeypatch):
+    """Non-sysadmins attempting to use the legacy login are logged out."""
+    app = Flask(__name__)
+    app.secret_key = "testing"
+
+    for bp in plugin.get_blueprint():
+        app.register_blueprint(bp)
+
+    app.add_url_rule("/user/logout", endpoint="user.logout", view_func=lambda: "logout")
+
+    monkeypatch.setattr(tk, "url_for", lambda endpoint, **values: url_for(endpoint, **values))
+    def _redirect_to(endpoint, **values):
+        if endpoint.startswith(("http://", "https://", "/")):
+            return redirect(endpoint)
+        return redirect(url_for(endpoint, **values))
+
+    monkeypatch.setattr(tk, "redirect_to", _redirect_to)
+    messages = []
+    monkeypatch.setattr(
+        tk,
+        "h",
+        SimpleNamespace(
+            url_is_local=lambda url: url.startswith("/"),
+            flash_notice=lambda msg: messages.append(("notice", msg)),
+            flash_error=lambda msg: messages.append(("error", msg)),
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
+    monkeypatch.setattr(plugin_module.authz, "is_sysadmin", lambda user: False)
+
+    token = "denied"
+    plugin_module.session[plugin_module.SESSION_ADMIN_LOGIN_TOKEN] = token
+
+    with app.test_request_context(f"/user/admin/logged-in?token={token}"):
+        g.user = "regular"
+        response = app.view_functions["oidc_pkce_bpa.admin_login_complete"]()
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == url_for("user.logout")
+    assert messages == [("error", "Only CKAN sysadmins may use the admin login.")]
+    assert plugin_module.SESSION_ADMIN_LOGIN_TOKEN not in plugin_module.session
+    assert plugin_module.SESSION_ADMIN_LOGIN_TARGET not in plugin_module.session
+
+
+def test_admin_login_complete_requires_successful_login(plugin, mock_config, monkeypatch):
+    """Failed logins send the user back to the admin entry point."""
+    app = Flask(__name__)
+    app.secret_key = "testing"
+
+    for bp in plugin.get_blueprint():
+        app.register_blueprint(bp)
+
+    monkeypatch.setattr(tk, "url_for", lambda endpoint, **values: url_for(endpoint, **values))
+    def _redirect_to(endpoint, **values):
+        if endpoint.startswith(("http://", "https://", "/")):
+            return redirect(endpoint)
+        return redirect(url_for(endpoint, **values))
+
+    monkeypatch.setattr(tk, "redirect_to", _redirect_to)
+    messages = []
+    monkeypatch.setattr(
+        tk,
+        "h",
+        SimpleNamespace(
+            url_is_local=lambda url: True,
+            flash_notice=lambda msg: messages.append(("notice", msg)),
+            flash_error=lambda msg: messages.append(("error", msg)),
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
+
+    token = "expired"
+    plugin_module.session[plugin_module.SESSION_ADMIN_LOGIN_TOKEN] = token
+
+    with app.test_request_context(f"/user/admin/logged-in?token={token}"):
+        g.user = None
+        response = app.view_functions["oidc_pkce_bpa.admin_login_complete"]()
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == url_for("oidc_pkce_bpa.admin_login")
+    assert messages == [("error", "Login failed. Bad username or password.")]
+
+
+def test_authenticator_login_redirects_to_oidc(monkeypatch, plugin):
+    """Default login route forces users through the OIDC flow."""
+    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
+    monkeypatch.setattr(
+        tk,
+        "url_for",
+        lambda endpoint, **values: "/user/login" if endpoint == "user.login" else endpoint,
+    )
+    sentinel = object()
+
+    def fake_redirect(endpoint, **values):
+        return sentinel
+
+    monkeypatch.setattr(tk, "redirect_to", fake_redirect)
+    monkeypatch.setattr(
+        tk,
+        "request",
+        SimpleNamespace(path="/user/login", args={}),
+        raising=False,
+    )
+
+    assert plugin.login() is sentinel
+
+
+def test_authenticator_login_allows_admin_token(monkeypatch, plugin):
+    """Admin login tokens bypass the OIDC redirect."""
+    token = "abc"
+    monkeypatch.setattr(
+        tk,
+        "url_for",
+        lambda endpoint, **values: "/user/login" if endpoint == "user.login" else endpoint,
+    )
+    monkeypatch.setattr(
+        tk,
+        "request",
+        SimpleNamespace(path="/user/login", args={"admin_token": token}),
+        raising=False,
+    )
+    monkeypatch.setattr(plugin_module, "session", {plugin_module.SESSION_ADMIN_LOGIN_TOKEN: token}, raising=False)
+
+    def _fail_redirect(*args, **kwargs):
+        raise AssertionError("redirect should not be called")
+
+    monkeypatch.setattr(tk, "redirect_to", _fail_redirect)
+
+    assert plugin.login() is None
+
+
+def test_authenticator_login_ignores_other_paths(monkeypatch, plugin):
+    """Non login routes are unaffected."""
+    monkeypatch.setattr(
+        tk,
+        "url_for",
+        lambda endpoint, **values: "/user/login" if endpoint == "user.login" else endpoint,
+    )
+    monkeypatch.setattr(
+        tk,
+        "request",
+        SimpleNamespace(path="/dataset", args={}),
+        raising=False,
+    )
+    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
+
+    def _fail_redirect(*args, **kwargs):
+        raise AssertionError("redirect should not be called")
+
+    monkeypatch.setattr(tk, "redirect_to", _fail_redirect)
+
+    assert plugin.login() is None
+
+
+def test_authenticator_logout_clears_tokens(monkeypatch, plugin):
+    """Legacy login state is reset on logout."""
+    monkeypatch.setattr(
+        plugin_module,
+        "session",
+        {
+            plugin_module.SESSION_ADMIN_LOGIN_TOKEN: "token",
+            plugin_module.SESSION_ADMIN_LOGIN_TARGET: "/target",
+        },
+        raising=False,
+    )
+    plugin.logout()
+    assert plugin_module.SESSION_ADMIN_LOGIN_TOKEN not in plugin_module.session
+    assert plugin_module.SESSION_ADMIN_LOGIN_TARGET not in plugin_module.session
 
 def test_oidc_login_response_passthrough_user(plugin):
     """When CKAN user sync succeeds we allow the default flow to continue."""
