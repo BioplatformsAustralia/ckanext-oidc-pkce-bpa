@@ -141,6 +141,7 @@ def _build_oidc_login_response(prompt: Optional[str] = None):
 oidc_views.bp.record_once(_register_callback_override)
 
 admin_bp = Blueprint("oidc_pkce_bpa", __name__)
+public_bp = Blueprint("oidc_pkce_bpa_public", __name__)
 
 log = logging.getLogger(__name__)
 
@@ -202,6 +203,18 @@ def admin_login_complete():
         return tk.redirect_to(redirect_target)
 
     return tk.redirect_to("admin.index")
+
+
+@public_bp.route("/user/register")
+def force_oidc_register():
+    # hard-redirect to AAI portal user registration page
+    return redirect(utils.get_redirect_registeration_url())
+
+
+@public_bp.route("/user/login")
+def force_oidc_login():
+    # redirect into OIDC login route inside CKAN
+    return tk.redirect_to("oidc_pkce.login")
 
 
 class OidcPkceBpaPlugin(SingletonPlugin):
@@ -293,7 +306,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
     # IBlueprint
 
     def get_blueprint(self):
-        return [admin_bp]
+        return [admin_bp, public_bp]
 
     def _create_new_user(self, userinfo: dict, username: str) -> model.User:
         # Generate a random UUID-based placeholder password that CKAN won't accept
@@ -326,18 +339,3 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         if updated_fullname and user.fullname != updated_fullname:
             log.info("Updating fullname for '%s' to '%s'", user.name, updated_fullname)
             user.fullname = updated_fullname
-
-    def get_blueprint(self):
-        bp = Blueprint("oidc_pkce_bpa", __name__)
-
-        @bp.route("/user/register")
-        def force_oidc_register():
-            # hard-redirect to AAI portal user registration page
-            return redirect(utils.get_redirect_registeration_url())
-    
-        @bp.route("/user/login")
-        def force_oidc_login():
-            # redirect into OIDC login route inside CKAN
-            return tk.redirect_to("oidc_pkce.login")
-    
-        return bp
