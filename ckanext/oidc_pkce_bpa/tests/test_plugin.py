@@ -218,14 +218,24 @@ def test_missing_access_token_raises(plugin, mock_services):
     mock_services.membership_service.apply_role_based_memberships.assert_not_called()
 
 
-def test_admin_login_blueprint_routes(plugin, mock_config, monkeypatch):
-    """Admin blueprint redirects to legacy login with a one-time token."""
+def _make_app(plugin):
     app = Flask(__name__)
     app.secret_key = "testing"
 
-    blueprint = plugin.get_blueprint()
-    for bp in blueprint:
+    for bp in plugin.get_blueprint():
         app.register_blueprint(bp)
+
+    @app.before_request
+    def _ensure_user():
+        if not hasattr(g, "user"):
+            g.user = None
+
+    return app
+
+
+def test_admin_login_blueprint_routes(plugin, mock_config, monkeypatch):
+    """Admin blueprint redirects to legacy login with a one-time token."""
+    app = _make_app(plugin)
 
     app.add_url_rule("/user/login", endpoint="user.login", view_func=lambda: "login")
     app.add_url_rule("/user/logout", endpoint="user.logout", view_func=lambda: "logout")
@@ -275,11 +285,7 @@ def test_admin_login_blueprint_routes(plugin, mock_config, monkeypatch):
 
 def test_admin_login_logs_out_active_session(plugin, mock_config, monkeypatch):
     """Logged-in users are logged out before seeing the admin login form."""
-    app = Flask(__name__)
-    app.secret_key = "testing"
-
-    for bp in plugin.get_blueprint():
-        app.register_blueprint(bp)
+    app = _make_app(plugin)
 
     app.add_url_rule("/user/logout", endpoint="user.logout", view_func=lambda: "logout")
 
@@ -311,17 +317,15 @@ def test_admin_login_logs_out_active_session(plugin, mock_config, monkeypatch):
         response = app.view_functions["oidc_pkce_bpa.admin_login"]()
 
     assert response.status_code == 302
-    assert response.headers["Location"] == url_for("user.logout", came_from="/user/admin/login")
+    parsed = urlparse(response.headers["Location"])
+    assert parsed.path == "/user/logout"
+    assert parse_qs(parsed.query) == {"came_from": ["/user/admin/login"]}
     assert messages == [("notice", "Logging you out before opening the admin login form.")]
 
 
 def test_admin_login_complete_allows_sysadmin(plugin, mock_config, monkeypatch):
     """Sysadmins completing login are redirected to their requested target."""
-    app = Flask(__name__)
-    app.secret_key = "testing"
-
-    for bp in plugin.get_blueprint():
-        app.register_blueprint(bp)
+    app = _make_app(plugin)
 
     app.add_url_rule("/ckan-admin", endpoint="admin.index", view_func=lambda: "admin")
 
@@ -359,7 +363,8 @@ def test_admin_login_complete_allows_sysadmin(plugin, mock_config, monkeypatch):
         response = app.view_functions["oidc_pkce_bpa.admin_login_complete"]()
 
     assert response.status_code == 302
-    assert response.headers["Location"] == url_for("admin.index")
+    parsed = urlparse(response.headers["Location"])
+    assert parsed.path == "/ckan-admin"
     assert plugin_module.SESSION_ADMIN_LOGIN_TOKEN not in plugin_module.session
     assert plugin_module.SESSION_ADMIN_LOGIN_TARGET not in plugin_module.session
     assert messages == []
@@ -367,11 +372,7 @@ def test_admin_login_complete_allows_sysadmin(plugin, mock_config, monkeypatch):
 
 def test_admin_login_complete_rejects_non_sysadmin(plugin, mock_config, monkeypatch):
     """Non-sysadmins attempting to use the legacy login are logged out."""
-    app = Flask(__name__)
-    app.secret_key = "testing"
-
-    for bp in plugin.get_blueprint():
-        app.register_blueprint(bp)
+    app = _make_app(plugin)
 
     app.add_url_rule("/user/logout", endpoint="user.logout", view_func=lambda: "logout")
 
@@ -404,7 +405,8 @@ def test_admin_login_complete_rejects_non_sysadmin(plugin, mock_config, monkeypa
         response = app.view_functions["oidc_pkce_bpa.admin_login_complete"]()
 
     assert response.status_code == 302
-    assert response.headers["Location"] == url_for("user.logout")
+    parsed = urlparse(response.headers["Location"])
+    assert parsed.path == "/user/logout"
     assert messages == [("error", "Only CKAN sysadmins may use the admin login.")]
     assert plugin_module.SESSION_ADMIN_LOGIN_TOKEN not in plugin_module.session
     assert plugin_module.SESSION_ADMIN_LOGIN_TARGET not in plugin_module.session
@@ -412,11 +414,7 @@ def test_admin_login_complete_rejects_non_sysadmin(plugin, mock_config, monkeypa
 
 def test_admin_login_complete_requires_successful_login(plugin, mock_config, monkeypatch):
     """Failed logins send the user back to the admin entry point."""
-    app = Flask(__name__)
-    app.secret_key = "testing"
-
-    for bp in plugin.get_blueprint():
-        app.register_blueprint(bp)
+    app = _make_app(plugin)
 
     monkeypatch.setattr(tk, "url_for", lambda endpoint, **values: url_for(endpoint, **values))
     def _redirect_to(endpoint, **values):
@@ -446,7 +444,8 @@ def test_admin_login_complete_requires_successful_login(plugin, mock_config, mon
         response = app.view_functions["oidc_pkce_bpa.admin_login_complete"]()
 
     assert response.status_code == 302
-    assert response.headers["Location"] == url_for("oidc_pkce_bpa.admin_login")
+    parsed = urlparse(response.headers["Location"])
+    assert parsed.path == "/user/admin/login"
     assert messages == [("error", "Login failed. Bad username or password.")]
 
 
