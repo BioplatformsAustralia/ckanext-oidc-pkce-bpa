@@ -327,17 +327,17 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             log.info("Updating fullname for '%s' to '%s'", user.name, updated_fullname)
             user.fullname = updated_fullname
 
-    # def get_blueprint(self):
-    #     bp = Blueprint("oidc_pkce_bpa", __name__)
+    def get_blueprint(self):
+        bp = Blueprint("oidc_pkce_bpa", __name__)
 
-    #     @bp.route("/user/register")
-    #     def force_oidc_register():
-    #         # hard-redirect to AAI portal user registration page
-    #         return redirect(utils.get_redirect_registeration_url())
+        @bp.route("/user/register")
+        def force_oidc_register():
+            # hard-redirect to AAI portal user registration page
+            return redirect(utils.get_redirect_registeration_url())
     
-    #     @bp.route("/user/login")
-    #     def force_oidc_login():
-    #         # redirect into OIDC login route inside CKAN
-    #         return tk.redirect_to("oidc_pkce.login")
+        @bp.route("/user/login")
+        def force_oidc_login():
+            # redirect into OIDC login route inside CKAN
+            return tk.redirect_to("oidc_pkce.login")
     
-    #     return bp
+        return bp
