@@ -1,7 +1,7 @@
 from flask import Blueprint, redirect, request
 import logging
 import uuid
-from typing import Optional
+from typing import Optional, Tuple
 from urllib.parse import urlencode
 
 from . import utils
@@ -15,6 +15,7 @@ from ckan.common import g, session
 from ckan.plugins import SingletonPlugin, implements
 from ckan.plugins.interfaces import IBlueprint, IAuthenticator
 import ckan.plugins.toolkit as tk
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from ckanext.oidc_pkce.interfaces import IOidcPkce
 
@@ -28,8 +29,8 @@ SESSION_FORCE_PROMPT = "ckanext:oidc_pkce_bpa:force_prompt_login"
 _ORIGINAL_OIDC_CALLBACK = oidc_views.callback
 _ORIGINAL_OIDC_LOGIN = None
 _ORIGINAL_FORCE_LOGIN = None
-SESSION_ADMIN_LOGIN_TOKEN = "ckanext:oidc_pkce_bpa:admin_login_token"
-SESSION_ADMIN_LOGIN_TARGET = "ckanext:oidc_pkce_bpa:admin_login_target"
+ADMIN_LOGIN_TOKEN_MAX_AGE = 600  # seconds
+ADMIN_LOGIN_TOKEN_SALT = "ckanext:oidc_pkce_bpa:admin_login"
 
 
 def _oidc_callback_with_email_check(*args, **kwargs):
@@ -146,6 +147,41 @@ public_bp = Blueprint("oidc_pkce_bpa_public", __name__)
 log = logging.getLogger(__name__)
 
 
+def _admin_token_secret() -> str:
+    secret = tk.config.get("beaker.session.secret")
+    if not secret:
+        secret = tk.config.get("app.instance_uuid")
+    if not secret:
+        secret = tk.config.get("ckan.site_id", "ckan")
+    return secret
+
+
+def _admin_token_serializer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(_admin_token_secret(), salt=ADMIN_LOGIN_TOKEN_SALT)
+
+
+def _generate_admin_token(target: Optional[str]) -> Tuple[str, dict]:
+    payload = {"id": uuid.uuid4().hex}
+    if target:
+        payload["target"] = target
+    serializer = _admin_token_serializer()
+    token = serializer.dumps(payload)
+    return token, payload
+
+
+def _load_admin_token(token: str) -> dict:
+    serializer = _admin_token_serializer()
+    return serializer.loads(token, max_age=ADMIN_LOGIN_TOKEN_MAX_AGE)
+
+
+def _resolve_admin_target(target: Optional[str]) -> Optional[str]:
+    if target and tk.h.url_is_local(target):
+        return target
+    if target:
+        log.warning("Ignored non-local admin login target: %s", target)
+    return None
+
+
 @admin_bp.route("/user/admin/login")
 def admin_login():
     """Entry point for sysadmins needing the legacy CKAN login form."""
@@ -156,16 +192,10 @@ def admin_login():
             came_from=tk.url_for("oidc_pkce_bpa.admin_login"),
         )
 
-    token = uuid.uuid4().hex
-    session[SESSION_ADMIN_LOGIN_TOKEN] = token
-
     requested_target = request.args.get("came_from")
-    if requested_target and tk.h.url_is_local(requested_target):
-        session[SESSION_ADMIN_LOGIN_TARGET] = requested_target
-    else:
-        session.pop(SESSION_ADMIN_LOGIN_TARGET, None)
-        if requested_target:
-            log.warning("Ignored non-local admin login target: %s", requested_target)
+    redirect_target = _resolve_admin_target(requested_target)
+
+    token, _payload = _generate_admin_token(redirect_target)
 
     return tk.redirect_to(
         "user.login",
@@ -178,12 +208,17 @@ def admin_login():
 def admin_login_complete():
     """Validate admin login attempts and restrict access to sysadmins."""
     token = request.args.get("token")
-    stored_token = session.get(SESSION_ADMIN_LOGIN_TOKEN)
-
-    if not stored_token or stored_token != token:
-        session.pop(SESSION_ADMIN_LOGIN_TOKEN, None)
-        session.pop(SESSION_ADMIN_LOGIN_TARGET, None)
+    if not token:
         tk.h.flash_error("The admin login session expired. Please try again.")
+        return tk.redirect_to("oidc_pkce_bpa.admin_login")
+
+    try:
+        payload = _load_admin_token(token)
+    except SignatureExpired:
+        tk.h.flash_error("The admin login link timed out. Please start again.")
+        return tk.redirect_to("oidc_pkce_bpa.admin_login")
+    except BadSignature:
+        tk.h.flash_error("Invalid admin login request.")
         return tk.redirect_to("oidc_pkce_bpa.admin_login")
 
     if not getattr(g, "user", None):
@@ -191,15 +226,12 @@ def admin_login_complete():
         return tk.redirect_to("oidc_pkce_bpa.admin_login")
 
     if not authz.is_sysadmin(g.user):
-        session.pop(SESSION_ADMIN_LOGIN_TOKEN, None)
-        session.pop(SESSION_ADMIN_LOGIN_TARGET, None)
         tk.h.flash_error("Only CKAN sysadmins may use the admin login.")
         return tk.redirect_to("user.logout")
 
-    redirect_target = session.pop(SESSION_ADMIN_LOGIN_TARGET, None)
-    session.pop(SESSION_ADMIN_LOGIN_TOKEN, None)
+    redirect_target = _resolve_admin_target(payload.get("target"))
 
-    if redirect_target and tk.h.url_is_local(redirect_target):
+    if redirect_target:
         return tk.redirect_to(redirect_target)
 
     return tk.redirect_to("admin.index")
@@ -209,12 +241,6 @@ def admin_login_complete():
 def force_oidc_register():
     # hard-redirect to AAI portal user registration page
     return redirect(utils.get_redirect_registration_url())
-
-
-@public_bp.route("/user/login")
-def force_oidc_login():
-    # redirect into OIDC login route inside CKAN
-    return tk.redirect_to("oidc_pkce.login")
 
 
 class OidcPkceBpaPlugin(SingletonPlugin):
@@ -292,15 +318,21 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             return None
 
         admin_token = tk.request.args.get("admin_token")
-        session_token = session.get(SESSION_ADMIN_LOGIN_TOKEN)
-        if admin_token and session_token and admin_token == session_token:
-            return None
+        if not admin_token:
+            return tk.redirect_to("oidc_pkce.login")
 
-        return tk.redirect_to("oidc_pkce.force_oidc_login")
+        try:
+            _load_admin_token(admin_token)
+        except SignatureExpired:
+            tk.h.flash_error("The admin login link timed out. Please start again.")
+            return tk.redirect_to("oidc_pkce_bpa.admin_login")
+        except BadSignature:
+            tk.h.flash_error("Invalid admin login request.")
+            return tk.redirect_to("oidc_pkce_bpa.admin_login")
+
+        return None
 
     def logout(self):
-        session.pop(SESSION_ADMIN_LOGIN_TOKEN, None)
-        session.pop(SESSION_ADMIN_LOGIN_TARGET, None)
         return None
 
     # IBlueprint

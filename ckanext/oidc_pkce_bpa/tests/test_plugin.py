@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlparse
@@ -12,6 +13,8 @@ from ckanext.oidc_pkce_bpa import utils
 from ckanext.oidc_pkce_bpa.plugin import OidcPkceBpaPlugin
 import ckanext.oidc_pkce_bpa.plugin as plugin_module
 from ckanext.oidc_pkce import views as oidc_views
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 def register_oidc_blueprint(app):
@@ -58,6 +61,7 @@ def mock_config(monkeypatch):
         "ckanext.oidc_pkce_bpa.role_org_mapping": json.dumps({"tsi-member": ["org-123"]}),
         "ckanext.oidc_pkce_bpa.username_claim": "https://biocommons.org.au/username",
         "ckanext.oidc_pkce_bpa.register_redirect_url": "https://example.com/register",
+        "beaker.session.secret": "test-secret",
     }
 
     utils.get_auth0_settings.cache_clear()
@@ -264,8 +268,6 @@ def test_admin_login_blueprint_routes(plugin, mock_config, monkeypatch):
         ),
         raising=False,
     )
-    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
-
     client = app.test_client()
 
     response = client.get("/user/admin/login?came_from=/ckan-admin")
@@ -274,13 +276,16 @@ def test_admin_login_blueprint_routes(plugin, mock_config, monkeypatch):
     parsed = urlparse(response.headers["Location"])
     assert parsed.path == "/user/login"
     token = parse_qs(parsed.query)["admin_token"][0]
-    assert plugin_module.session[plugin_module.SESSION_ADMIN_LOGIN_TOKEN] == token
-    assert plugin_module.session[plugin_module.SESSION_ADMIN_LOGIN_TARGET] == "/ckan-admin"
+    payload = plugin_module._load_admin_token(token)
+    assert payload["target"] == "/ckan-admin"
 
     # Non-local target is ignored
     response = client.get("/user/admin/login?came_from=https://evil.example.com")
     assert response.status_code == 302
-    assert plugin_module.SESSION_ADMIN_LOGIN_TARGET not in plugin_module.session
+    parsed = urlparse(response.headers["Location"])
+    token = parse_qs(parsed.query)["admin_token"][0]
+    payload = plugin_module._load_admin_token(token)
+    assert "target" not in payload
 
 
 def test_admin_login_logs_out_active_session(plugin, mock_config, monkeypatch):
@@ -310,8 +315,6 @@ def test_admin_login_logs_out_active_session(plugin, mock_config, monkeypatch):
         ),
         raising=False,
     )
-    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
-
     with app.test_request_context("/user/admin/login"):
         g.user = "sysadmin"
         response = app.view_functions["oidc_pkce_bpa.admin_login"]()
@@ -351,13 +354,10 @@ def test_admin_login_complete_allows_sysadmin(plugin, mock_config, monkeypatch):
         ),
         raising=False,
     )
-    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
     monkeypatch.setattr(plugin_module.authz, "is_sysadmin", lambda user: True)
 
-    token = "abc123"
-    plugin_module.session[plugin_module.SESSION_ADMIN_LOGIN_TOKEN] = token
-    plugin_module.session[plugin_module.SESSION_ADMIN_LOGIN_TARGET] = "/ckan-admin"
-
+    token, payload = plugin_module._generate_admin_token("/ckan-admin")
+    assert payload["target"] == "/ckan-admin"
     with app.test_request_context(f"/user/admin/logged-in?token={token}"):
         g.user = "sysadmin"
         response = app.view_functions["oidc_pkce_bpa.admin_login_complete"]()
@@ -365,8 +365,6 @@ def test_admin_login_complete_allows_sysadmin(plugin, mock_config, monkeypatch):
     assert response.status_code == 302
     parsed = urlparse(response.headers["Location"])
     assert parsed.path == "/ckan-admin"
-    assert plugin_module.SESSION_ADMIN_LOGIN_TOKEN not in plugin_module.session
-    assert plugin_module.SESSION_ADMIN_LOGIN_TARGET not in plugin_module.session
     assert messages == []
 
 
@@ -394,11 +392,9 @@ def test_admin_login_complete_rejects_non_sysadmin(plugin, mock_config, monkeypa
         ),
         raising=False,
     )
-    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
     monkeypatch.setattr(plugin_module.authz, "is_sysadmin", lambda user: False)
 
-    token = "denied"
-    plugin_module.session[plugin_module.SESSION_ADMIN_LOGIN_TOKEN] = token
+    token, _ = plugin_module._generate_admin_token("/ckan-admin")
 
     with app.test_request_context(f"/user/admin/logged-in?token={token}"):
         g.user = "regular"
@@ -408,8 +404,6 @@ def test_admin_login_complete_rejects_non_sysadmin(plugin, mock_config, monkeypa
     parsed = urlparse(response.headers["Location"])
     assert parsed.path == "/user/logout"
     assert messages == [("error", "Only CKAN sysadmins may use the admin login.")]
-    assert plugin_module.SESSION_ADMIN_LOGIN_TOKEN not in plugin_module.session
-    assert plugin_module.SESSION_ADMIN_LOGIN_TARGET not in plugin_module.session
 
 
 def test_admin_login_complete_requires_successful_login(plugin, mock_config, monkeypatch):
@@ -434,10 +428,7 @@ def test_admin_login_complete_requires_successful_login(plugin, mock_config, mon
         ),
         raising=False,
     )
-    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
-
-    token = "expired"
-    plugin_module.session[plugin_module.SESSION_ADMIN_LOGIN_TOKEN] = token
+    token, _ = plugin_module._generate_admin_token("/ckan-admin")
 
     with app.test_request_context(f"/user/admin/logged-in?token={token}"):
         g.user = None
@@ -451,15 +442,16 @@ def test_admin_login_complete_requires_successful_login(plugin, mock_config, mon
 
 def test_authenticator_login_redirects_to_oidc(monkeypatch, plugin):
     """Default login route forces users through the OIDC flow."""
-    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
     monkeypatch.setattr(
         tk,
         "url_for",
         lambda endpoint, **values: "/user/login" if endpoint == "user.login" else endpoint,
     )
     sentinel = object()
+    calls = []
 
     def fake_redirect(endpoint, **values):
+        calls.append((endpoint, values))
         return sentinel
 
     monkeypatch.setattr(tk, "redirect_to", fake_redirect)
@@ -471,11 +463,12 @@ def test_authenticator_login_redirects_to_oidc(monkeypatch, plugin):
     )
 
     assert plugin.login() is sentinel
+    assert calls == [("oidc_pkce.login", {})]
 
 
 def test_authenticator_login_allows_admin_token(monkeypatch, plugin):
     """Admin login tokens bypass the OIDC redirect."""
-    token = "abc"
+    token, _ = plugin_module._generate_admin_token("/ckan-admin")
     monkeypatch.setattr(
         tk,
         "url_for",
@@ -487,7 +480,6 @@ def test_authenticator_login_allows_admin_token(monkeypatch, plugin):
         SimpleNamespace(path="/user/login", args={"admin_token": token}),
         raising=False,
     )
-    monkeypatch.setattr(plugin_module, "session", {plugin_module.SESSION_ADMIN_LOGIN_TOKEN: token}, raising=False)
 
     def _fail_redirect(*args, **kwargs):
         raise AssertionError("redirect should not be called")
@@ -510,7 +502,6 @@ def test_authenticator_login_ignores_other_paths(monkeypatch, plugin):
         SimpleNamespace(path="/dataset", args={}),
         raising=False,
     )
-    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
 
     def _fail_redirect(*args, **kwargs):
         raise AssertionError("redirect should not be called")
@@ -520,20 +511,34 @@ def test_authenticator_login_ignores_other_paths(monkeypatch, plugin):
     assert plugin.login() is None
 
 
-def test_authenticator_logout_clears_tokens(monkeypatch, plugin):
-    """Legacy login state is reset on logout."""
-    monkeypatch.setattr(
-        plugin_module,
-        "session",
-        {
-            plugin_module.SESSION_ADMIN_LOGIN_TOKEN: "token",
-            plugin_module.SESSION_ADMIN_LOGIN_TARGET: "/target",
-        },
-        raising=False,
-    )
-    plugin.logout()
-    assert plugin_module.SESSION_ADMIN_LOGIN_TOKEN not in plugin_module.session
-    assert plugin_module.SESSION_ADMIN_LOGIN_TARGET not in plugin_module.session
+def test_authenticator_logout_noop(plugin):
+    """Logout hook leaves default behaviour unchanged."""
+    assert plugin.logout() is None
+
+
+def test_site_header_login_and_register_use_oidc():
+    template = (REPO_ROOT / "ckanext-bpatheme/ckanext/bpatheme/templates/header.html").read_text()
+    assert "oidc_pkce.login" in template
+    assert "oidc_pkce_bpa_public.force_oidc_register" in template
+
+
+def test_popover_login_links_to_oidc():
+    template = (
+        REPO_ROOT
+        / "ckanext-bulk/ckanext/bulk/templates/ckanext_bulk/snippets/common_popover.html"
+    ).read_text()
+    assert "oidc_pkce.login" in template
+    assert "oidc_pkce_bpa_public.force_oidc_register" in template
+
+
+def test_initiatives_links_use_oidc():
+    template = (
+        REPO_ROOT
+        / "ckanext-initiatives/ckanext/initiatives/templates/ckanext_initiatives/snippets/"
+        "resource_item/nonauth_explore.html"
+    ).read_text()
+    assert "oidc_pkce.login" in template
+    assert "oidc_pkce_bpa_public.force_oidc_register" in template
 
 def test_oidc_login_response_passthrough_user(plugin):
     """When CKAN user sync succeeds we allow the default flow to continue."""
