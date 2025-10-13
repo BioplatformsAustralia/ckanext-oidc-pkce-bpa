@@ -5,7 +5,7 @@ import logging
 import requests
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Dict, Iterable, List, Mapping, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Tuple, Set
 
 from types import MappingProxyType
 
@@ -272,8 +272,13 @@ class MembershipService:
 
     def _ensure_org_member(self, *, org_id: str, user_name: str, context: Dict[str, Any]):
         try:
+            user_identifiers: Set[str] = {user_name}
+            user_obj = context.get("model").User.get(user_name) if context.get("model") else None
+            if user_obj and user_obj.id:
+                user_identifiers.add(str(user_obj.id))
+
             members = tk.get_action("member_list")(context, {"id": org_id, "object_type": "user"})
-            if any(self._member_entry_matches_user(member, user_name) for member in members):
+            if any(self._member_entry_matches_user(member, user_identifiers) for member in members):
                 log.info("User '%s' already a member of '%s'; skipping.", user_name, org_id)
                 return
             tk.get_action("member_create")(context, {
@@ -292,15 +297,21 @@ class MembershipService:
             log.error("Failed to add '%s' to '%s': %s", user_name, org_id, exc)
 
     @staticmethod
-    def _member_entry_matches_user(member: Any, user_name: str) -> bool:
+    def _member_entry_matches_user(member: Any, identifiers: Set[str]) -> bool:
         if isinstance(member, dict):
             for key in ("username", "name", "id", "object", "user"):
-                if member.get(key) == user_name:
+                value = member.get(key)
+                if value is not None and str(value) in identifiers:
                     return True
             return False
 
         if isinstance(member, (list, tuple)):
-            return any(isinstance(item, str) and item == user_name for item in member)
+            for item in member:
+                if item is None:
+                    continue
+                if str(item) in identifiers:
+                    return True
+            return False
 
         return False
 
