@@ -46,14 +46,14 @@ def test_extract_username_fallback_and_missing(auth0_config):
         utils.extract_username({})
 
 
-def test_get_redirect_registeration_url_present(auth0_config):
-    assert utils.get_redirect_registeration_url() == "http://example.com/register"
+def test_get_redirect_registration_url_present(auth0_config):
+    assert utils.get_redirect_registration_url() == "http://example.com/register"
 
 
-def test_get_redirect_registeration_url_missing(monkeypatch):
+def test_get_redirect_registration_url_missing(monkeypatch):
     monkeypatch.setattr(utils, "ckan_config", {})
     with pytest.raises(tk.NotAuthorized, match="redirect_registation_url"):
-        utils.get_redirect_registeration_url()
+        utils.get_redirect_registration_url()
 
 
 def test_role_org_mapping_is_normalised(auth0_config):
