@@ -149,7 +149,7 @@ log = logging.getLogger(__name__)
 @admin_bp.route("/user/admin/login")
 def admin_login():
     """Entry point for sysadmins needing the legacy CKAN login form."""
-    if g.user:
+    if getattr(g, "user", None):
         tk.h.flash_notice("Logging you out before opening the admin login form.")
         return tk.redirect_to(
             "user.logout",
@@ -186,7 +186,7 @@ def admin_login_complete():
         tk.h.flash_error("The admin login session expired. Please try again.")
         return tk.redirect_to("oidc_pkce_bpa.admin_login")
 
-    if not g.user:
+    if not getattr(g, "user", None):
         tk.h.flash_error("Login failed. Bad username or password.")
         return tk.redirect_to("oidc_pkce_bpa.admin_login")
 
@@ -208,7 +208,7 @@ def admin_login_complete():
 @public_bp.route("/user/register")
 def force_oidc_register():
     # hard-redirect to AAI portal user registration page
-    return redirect(utils.get_redirect_registeration_url())
+    return redirect(utils.get_redirect_registration_url())
 
 
 @public_bp.route("/user/login")
