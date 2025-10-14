@@ -323,6 +323,36 @@ def test_admin_login_logs_out_active_session(plugin, mock_config, monkeypatch):
     assert messages == [("notice", "Logging you out before opening the admin login form.")]
 
 
+def test_force_oidc_login_allows_admin_token(plugin, mock_config, monkeypatch):
+    """The force login route defers to the legacy login when an admin token is present."""
+    app = _make_app(plugin)
+
+    token = "abc123"
+    monkeypatch.setattr(
+        plugin_module,
+        "session",
+        {plugin_module.SESSION_ADMIN_LOGIN_TOKEN: token},
+        raising=False,
+    )
+
+    sentinel = object()
+
+    def legacy_login():
+        return sentinel
+
+    app.add_url_rule("/user/login", endpoint="user.login", view_func=legacy_login)
+
+    def _fail_redirect(*args, **kwargs):
+        raise AssertionError("OIDC redirect should not be triggered for admin login")
+
+    monkeypatch.setattr(tk, "redirect_to", _fail_redirect)
+
+    with app.test_request_context(f"/user/login?admin_token={token}"):
+        response = app.view_functions["oidc_pkce_bpa_public.force_oidc_login"]()
+
+    assert response is sentinel
+
+
 def test_admin_login_complete_allows_sysadmin(plugin, mock_config, monkeypatch):
     """Sysadmins completing login are redirected to their requested target."""
     app = _make_app(plugin)

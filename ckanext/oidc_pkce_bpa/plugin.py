@@ -1,4 +1,4 @@
-from flask import Blueprint, redirect, request
+from flask import Blueprint, current_app, redirect, request
 import logging
 import uuid
 from typing import Optional
@@ -213,6 +213,14 @@ def force_oidc_register():
 
 @public_bp.route("/user/login")
 def force_oidc_login():
+    admin_token = request.args.get("admin_token")
+    session_token = session.get(SESSION_ADMIN_LOGIN_TOKEN)
+    if admin_token and session_token and admin_token == session_token:
+        legacy_login_view = current_app.view_functions.get("user.login")
+        if legacy_login_view:
+            return legacy_login_view()
+        log.warning("Legacy login view not found; falling back to OIDC login.")
+
     # redirect into OIDC login route inside CKAN
     return tk.redirect_to("oidc_pkce.login")
 
