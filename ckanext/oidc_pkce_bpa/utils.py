@@ -252,12 +252,15 @@ def get_token_service() -> Auth0TokenService:
 class MembershipService:
     def __init__(self, settings: Auth0Settings):
         self._settings = settings
+        managed_orgs = set()
+        for org_ids in settings.role_org_mapping.values():
+            managed_orgs.update(org_ids)
+        self._managed_org_ids = tuple(sorted(managed_orgs))
 
     def apply_role_based_memberships(self, *, user_name: str, roles: List[str], context: Dict[str, Any]):
-        if not roles:
-            return
+        desired_org_ids = set()
+        roles = roles or []
 
-        seen_org_ids = set()
         for role in roles:
             org_ids = self._settings.role_org_mapping.get(role)
             if not org_ids:
@@ -265,10 +268,15 @@ class MembershipService:
                 continue
 
             for org_id in org_ids:
-                if org_id in seen_org_ids:
+                if org_id in desired_org_ids:
                     continue
-                seen_org_ids.add(org_id)
+                desired_org_ids.add(org_id)
                 self._ensure_org_member(org_id=org_id, user_name=user_name, context=context)
+
+        for org_id in self._managed_org_ids:
+            if org_id in desired_org_ids:
+                continue
+            self._remove_org_member(org_id=org_id, user_name=user_name, context=context)
 
     def _ensure_org_member(self, *, org_id: str, user_name: str, context: Dict[str, Any]):
         try:
@@ -290,6 +298,31 @@ class MembershipService:
             log.warning("Validation error adding '%s' to '%s': %s", user_name, org_id, exc)
         except Exception as exc:
             log.error("Failed to add '%s' to '%s': %s", user_name, org_id, exc)
+
+    def _remove_org_member(self, *, org_id: str, user_name: str, context: Dict[str, Any]):
+        try:
+            members = tk.get_action("member_list")(context, {"id": org_id, "object_type": "user"})
+            if not any(self._member_entry_matches_user(member, user_name) for member in members):
+                log.debug("User '%s' not a member of '%s'; nothing to revoke.", user_name, org_id)
+                return
+            tk.get_action("member_delete")(context, {
+                "id": org_id,
+                "object": user_name,
+                "object_type": "user",
+            })
+            log.info("Revoked '%s' access to org '%s'", user_name, org_id)
+        except NotAuthorized as exc:
+            log.error(
+                "NotAuthorized removing '%s' from '%s': %s (tip: use site user context)",
+                user_name,
+                org_id,
+                exc,
+            )
+            raise
+        except tk.ValidationError as exc:
+            log.warning("Validation error removing '%s' from '%s': %s", user_name, org_id, exc)
+        except Exception as exc:
+            log.error("Failed to remove '%s' from '%s': %s", user_name, org_id, exc)
 
     @staticmethod
     def _member_entry_matches_user(member: Any, user_name: str) -> bool:
