@@ -76,18 +76,28 @@ def _make_membership_actions(memberships, id_lookup=None):
     def member_create(context, data):
         org_members = memberships.setdefault(data["id"], [])
         identifier = data["object"]
-        username = reverse_lookup.get(identifier, identifier)
-        org_members.append({"id": identifier, "username": username})
+        if identifier in reverse_lookup:
+            username = reverse_lookup[identifier]
+            user_id = identifier
+        else:
+            username = identifier
+            user_id = id_lookup.get(identifier, identifier)
+        org_members.append({"id": user_id, "username": username})
         return {"success": True}
 
     def member_delete(context, data):
         org_members = memberships.get(data["id"], [])
         identifier = data["object"]
-        username = reverse_lookup.get(identifier, identifier)
+        if identifier in reverse_lookup:
+            username = reverse_lookup[identifier]
+            user_id = identifier
+        else:
+            username = identifier
+            user_id = id_lookup.get(identifier, identifier)
         memberships[data["id"]] = [
             member
             for member in org_members
-            if member.get("username") != username and member.get("id") != identifier
+            if member.get("username") != username and member.get("id") != user_id
         ]
         return {"success": True}
 
