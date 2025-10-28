@@ -5,7 +5,7 @@ import logging
 import requests
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Dict, Iterable, List, Mapping, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from types import MappingProxyType
 
@@ -279,9 +279,20 @@ class MembershipService:
             self._remove_org_member(org_id=org_id, user_name=user_name, context=context)
 
     def _ensure_org_member(self, *, org_id: str, user_name: str, context: Dict[str, Any]):
+        user_id = self._get_user_id(user_name)
         try:
-            members = tk.get_action("member_list")(context, {"id": org_id, "object_type": "user"})
-            if any(self._member_entry_matches_user(member, user_name) for member in members):
+            members = tk.get_action("member_list")(
+                context,
+                {"id": org_id, "object_type": "user", "all_fields": True},
+            )
+            if any(
+                self._member_entry_matches_user(
+                    member,
+                    user_name=user_name,
+                    user_id=user_id,
+                )
+                for member in members
+            ):
                 log.info("User '%s' already a member of '%s'; skipping.", user_name, org_id)
                 return
             tk.get_action("member_create")(context, {
@@ -300,9 +311,20 @@ class MembershipService:
             log.error("Failed to add '%s' to '%s': %s", user_name, org_id, exc)
 
     def _remove_org_member(self, *, org_id: str, user_name: str, context: Dict[str, Any]):
+        user_id = self._get_user_id(user_name)
         try:
-            members = tk.get_action("member_list")(context, {"id": org_id, "object_type": "user"})
-            if not any(self._member_entry_matches_user(member, user_name) for member in members):
+            members = tk.get_action("member_list")(
+                context,
+                {"id": org_id, "object_type": "user", "all_fields": True},
+            )
+            if not any(
+                self._member_entry_matches_user(
+                    member,
+                    user_name=user_name,
+                    user_id=user_id,
+                )
+                for member in members
+            ):
                 log.debug("User '%s' not a member of '%s'; nothing to revoke.", user_name, org_id)
                 return
             tk.get_action("member_delete")(context, {
@@ -325,15 +347,25 @@ class MembershipService:
             log.error("Failed to remove '%s' from '%s': %s", user_name, org_id, exc)
 
     @staticmethod
-    def _member_entry_matches_user(member: Any, user_name: str) -> bool:
+    def _get_user_id(user_name: str) -> Optional[str]:
+        user = ckan_model.User.get(user_name)
+        return getattr(user, "id", None) if user else None
+
+    @staticmethod
+    def _member_entry_matches_user(member: Any, *, user_name: str, user_id: Optional[str]) -> bool:
+        targets = {user_name}
+        if user_id:
+            targets.add(user_id)
+
         if isinstance(member, dict):
-            for key in ("username", "name", "id", "object", "user"):
-                if member.get(key) == user_name:
+            for key in ("id", "username", "name", "object", "user"):
+                value = member.get(key)
+                if isinstance(value, str) and value in targets:
                     return True
             return False
 
         if isinstance(member, (list, tuple)):
-            return any(isinstance(item, str) and item == user_name for item in member)
+            return any(isinstance(item, str) and item in targets for item in member)
 
         return False
 

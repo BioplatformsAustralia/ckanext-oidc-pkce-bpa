@@ -267,6 +267,16 @@ class OidcPkceBpaPlugin(SingletonPlugin):
                     roles=roles,
                     context=site_ctx,
                 )
+                if not roles:
+                    log.info(
+                        "No Auth0 roles returned for '%s'; ensuring CKAN organisation access is revoked.",
+                        user.name,
+                    )
+                    membership_service.apply_role_based_memberships(
+                        user_name=user.name,
+                        roles=[],
+                        context=site_ctx,
+                    )
             except Exception as e:
                 log.warning("Role membership apply at login failed for '%s': %s", user.name, e)
 
