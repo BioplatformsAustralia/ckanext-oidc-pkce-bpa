@@ -18,6 +18,8 @@ import ckan.plugins.toolkit as tk
 
 from ckanext.oidc_pkce.interfaces import IOidcPkce
 
+AUTHORIZATION_ERROR_MESSAGE = "You are not authorized to access this service."
+
 SESSION_CAME_FROM = oidc_views.SESSION_CAME_FROM
 SESSION_STATE = oidc_views.SESSION_STATE
 SESSION_VERIFIER = oidc_views.SESSION_VERIFIER
@@ -32,11 +34,28 @@ SESSION_ADMIN_LOGIN_TOKEN = "ckanext:oidc_pkce_bpa:admin_login_token"
 SESSION_ADMIN_LOGIN_TARGET = "ckanext:oidc_pkce_bpa:admin_login_target"
 
 
+def _clear_denied_login_session(*, force_prompt: bool):
+    session.pop(SESSION_CAME_FROM, None)
+    session.pop(SESSION_STATE, None)
+    session.pop(SESSION_VERIFIER, None)
+    if force_prompt:
+        session[SESSION_FORCE_PROMPT] = True
+    else:
+        session.pop(SESSION_FORCE_PROMPT, None)
+
+
 def _oidc_callback_with_email_check(*args, **kwargs):
-    """Intercept Auth0 "access_denied" errors to keep users on CKAN."""
+    """Intercept Auth0 callback errors to keep users on CKAN with clear messaging."""
     error = tk.request.args.get("error")
+    error_description = tk.request.args.get("error_description") or ""
+
+    if error == "missing_required_role" or "missing_required_role" in error_description:
+        log.warning("OIDC callback denied access due to missing Auth0 role: %s", error_description or error)
+        tk.h.flash_error(AUTHORIZATION_ERROR_MESSAGE)
+        _clear_denied_login_session(force_prompt=False)
+        return tk.redirect_to("home.index")
+
     if error == "access_denied":
-        error_description = tk.request.args.get("error_description") or ""
         message = error_description or "OIDC login was denied."
 
         if "email" in error_description.lower() and "verif" in error_description.lower():
@@ -47,10 +66,7 @@ def _oidc_callback_with_email_check(*args, **kwargs):
 
         log.warning("OIDC callback denied access: %s", error_description or error)
         tk.h.flash_error(message)
-        session.pop(SESSION_CAME_FROM, None)
-        session.pop(SESSION_STATE, None)
-        session.pop(SESSION_VERIFIER, None)
-        session[SESSION_FORCE_PROMPT] = True
+        _clear_denied_login_session(force_prompt=True)
         return tk.redirect_to("home.index")
 
     return _ORIGINAL_OIDC_CALLBACK(*args, **kwargs)
@@ -291,6 +307,8 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             roles = token_service.get_user_roles(access_token)
         except Exception as e:
             log.warning("Failed to read Auth0 roles for '%s': %s", user.name, e)
+            tk.h.flash_error(AUTHORIZATION_ERROR_MESSAGE)
+            raise tk.NotAuthorized(AUTHORIZATION_ERROR_MESSAGE) from e
         else:
             log.debug("Auth0 roles for '%s': %s", user.name, roles)
             try:

@@ -641,6 +641,50 @@ def test_callback_access_denied_redirects_home(monkeypatch):
         assert plugin_module.SESSION_SKIP_OIDC not in sess
 
 
+def test_callback_missing_required_role_shows_authorisation_error(monkeypatch):
+    """Missing required Auth0 roles surfaces a friendly authorisation message."""
+    messages = []
+    monkeypatch.setattr(
+        tk,
+        "h",
+        SimpleNamespace(flash_error=lambda msg: messages.append(msg)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tk,
+        "redirect_to",
+        lambda endpoint: redirect(f"/mock/{endpoint}"),
+    )
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    register_oidc_blueprint(app)
+
+    client = app.test_client()
+
+    with client.session_transaction() as sess:
+        sess[plugin_module.SESSION_CAME_FROM] = "original"
+        sess[plugin_module.SESSION_STATE] = "state"
+        sess[plugin_module.SESSION_VERIFIER] = "verifier"
+        sess[plugin_module.SESSION_FORCE_PROMPT] = True
+
+    response = client.get(
+        "/user/login/oidc-pkce/callback?error=missing_required_role&error_description="
+        "missing_required_role"
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/mock/home.index")
+    assert messages[-1] == plugin_module.AUTHORIZATION_ERROR_MESSAGE
+
+    with client.session_transaction() as sess:
+        assert plugin_module.SESSION_CAME_FROM not in sess
+        assert plugin_module.SESSION_STATE not in sess
+        assert plugin_module.SESSION_VERIFIER not in sess
+        assert plugin_module.SESSION_FORCE_PROMPT not in sess
+        assert plugin_module.SESSION_SKIP_OIDC not in sess
+
+
 
 
 def test_force_login_triggers_prompt_when_flagged(monkeypatch, mock_config):
