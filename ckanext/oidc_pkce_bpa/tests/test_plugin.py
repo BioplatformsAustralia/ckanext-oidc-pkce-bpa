@@ -643,7 +643,7 @@ def test_callback_access_denied_redirects_home(monkeypatch):
 
 
 
-def test_force_login_triggers_prompt_when_flagged(monkeypatch):
+def test_force_login_triggers_prompt_when_flagged(monkeypatch, mock_config):
     """SSO denial forces the next login attempt to show the Auth0 prompt."""
     monkeypatch.setattr(plugin_module.oidc_config, "client_id", lambda: "cid")
     monkeypatch.setattr(plugin_module.oidc_config, "redirect_url", lambda: "https://ckan.example.com/callback")
@@ -678,7 +678,7 @@ def test_force_login_triggers_prompt_when_flagged(monkeypatch):
         assert sess[plugin_module.SESSION_VERIFIER] == "verifier"
 
 
-def test_login_route_always_redirects_to_oidc(monkeypatch):
+def test_login_route_always_redirects_to_oidc(monkeypatch, mock_config):
     """The login route keeps redirecting to the OIDC flow even if legacy flags exist."""
     monkeypatch.setattr(tk, "redirect_to", lambda endpoint: f"/mock/{endpoint}")
 
