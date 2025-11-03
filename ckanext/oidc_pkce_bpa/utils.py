@@ -5,7 +5,7 @@ import logging
 import requests
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Dict, Iterable, List, Mapping, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from types import MappingProxyType
 
@@ -146,6 +146,55 @@ def get_redirect_registration_url() -> str:
     if not register_redirect_url:
         raise tk.NotAuthorized("redirect_registation_url not set in ckan.ini!")
     return register_redirect_url
+
+
+class _SafeFormatDict(dict):
+    """Provide empty defaults for missing format keys."""
+
+    def __missing__(self, key):
+        return ""
+
+
+def get_profile_redirect_url() -> str:
+    """Return the configured portal profile URL template."""
+    profile_redirect = ckan_config.get("ckanext.oidc_pkce_bpa.profile_redirect_url")
+    if not profile_redirect:
+        raise tk.NotAuthorized("profile_redirect_url not set in ckan.ini!")
+    return profile_redirect
+
+
+def build_profile_redirect_url(*, username: str, user_obj: Optional[ckan_model.User], template: Optional[str] = None) -> Optional[str]:
+    """
+    Construct the final portal profile URL using an optional template.
+
+    The template may reference placeholders such as {username}, {email},
+    {id}, {user_id}, {fullname}, or {display_name}. Missing keys are
+    replaced with an empty string.
+    """
+    if not username:
+        return None
+
+    url_template = template or ckan_config.get("ckanext.oidc_pkce_bpa.profile_redirect_url")
+    if not url_template:
+        return None
+
+    safe_mapping = _SafeFormatDict(
+        username=username,
+        user=username,
+    )
+
+    if user_obj is not None:
+        safe_mapping.update(
+            {
+                "id": getattr(user_obj, "id", "") or "",
+                "user_id": getattr(user_obj, "id", "") or "",
+                "email": getattr(user_obj, "email", "") or "",
+                "fullname": getattr(user_obj, "fullname", "") or "",
+                "display_name": getattr(user_obj, "display_name", "") or "",
+            }
+        )
+
+    return url_template.format_map(safe_mapping)
 
 
 def get_site_context() -> Dict[str, Any]:

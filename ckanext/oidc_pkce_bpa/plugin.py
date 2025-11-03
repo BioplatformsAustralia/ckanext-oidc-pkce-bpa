@@ -225,6 +225,35 @@ def force_oidc_login():
     return tk.redirect_to("oidc_pkce.login")
 
 
+@public_bp.route("/user/profile/update")
+def redirect_profile_update():
+    """Send users to the external profile update page."""
+    active_user = getattr(g, "user", None)
+    if not active_user:
+        tk.h.flash_error("Please log in to update your profile.")
+        return tk.redirect_to(
+            "user.login",
+            came_from=tk.url_for("oidc_pkce_bpa_public.redirect_profile_update"),
+        )
+
+    try:
+        template = utils.get_profile_redirect_url()
+    except tk.NotAuthorized:
+        tk.h.flash_error("Profile update portal URL is not configured.")
+        return tk.redirect_to("user.edit", id=active_user)
+
+    portal_url = utils.build_profile_redirect_url(
+        username=active_user,
+        user_obj=getattr(g, "userobj", None),
+        template=template,
+    )
+    if not portal_url:
+        tk.h.flash_error("Profile update portal URL could not be determined.")
+        return tk.redirect_to("user.edit", id=active_user)
+
+    return redirect(portal_url)
+
+
 class OidcPkceBpaPlugin(SingletonPlugin):
     implements(IOidcPkce, inherit=True)
     implements(IAuthenticator, inherit=True)

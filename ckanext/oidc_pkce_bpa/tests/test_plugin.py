@@ -58,6 +58,7 @@ def mock_config(monkeypatch):
         "ckanext.oidc_pkce_bpa.role_org_mapping": json.dumps({"tsi-member": ["org-123"]}),
         "ckanext.oidc_pkce_bpa.username_claim": "https://biocommons.org.au/username",
         "ckanext.oidc_pkce_bpa.register_redirect_url": "https://example.com/register",
+        "ckanext.oidc_pkce_bpa.profile_redirect_url": "https://profiles.example.com/profile",
     }
 
     utils.get_auth0_settings.cache_clear()
@@ -691,3 +692,77 @@ def test_login_route_always_redirects_to_oidc(monkeypatch):
     response = client.get("/user/login")
     assert response.status_code == 302
     assert response.headers["Location"].endswith("/mock/oidc_pkce.login")
+
+
+def test_profile_update_route_redirects_to_portal(monkeypatch, mock_config):
+    """Clicking the profile update route sends the user to the portal."""
+    messages = []
+    monkeypatch.setattr(tk, "h", SimpleNamespace(flash_error=lambda msg: messages.append(msg)), raising=False)
+    monkeypatch.setattr(tk, "redirect_to", lambda endpoint, **kwargs: redirect(f"/mock/{endpoint}"), raising=False)
+    monkeypatch.setattr(tk, "url_for", lambda endpoint, **kwargs: f"/mock/{endpoint}", raising=False)
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    register_oidc_blueprint(app)
+
+    @app.before_request
+    def _fake_user():
+        g.user = "alice"
+        g.userobj = SimpleNamespace(
+            name="alice",
+            id="user-1",
+            email="alice@example.com",
+            display_name="Alice Example",
+        )
+
+    client = app.test_client()
+    response = client.get("/user/profile/update")
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == "https://profiles.example.com/profile"
+    assert messages == []
+
+
+def test_profile_update_route_requires_login(monkeypatch, mock_config):
+    """Unauthenticated users are bounced back to the CKAN login screen."""
+    messages = []
+    monkeypatch.setattr(tk, "h", SimpleNamespace(flash_error=lambda msg: messages.append(msg)), raising=False)
+    monkeypatch.setattr(tk, "redirect_to", lambda endpoint, **kwargs: redirect(f"/mock/{endpoint}"), raising=False)
+    monkeypatch.setattr(tk, "url_for", lambda endpoint, **kwargs: f"/mock/{endpoint}", raising=False)
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    register_oidc_blueprint(app)
+
+    client = app.test_client()
+    response = client.get("/user/profile/update")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/mock/user.login")
+    assert messages == ["Please log in to update your profile."]
+
+
+def test_profile_update_route_handles_missing_config(monkeypatch, mock_config):
+    """If the portal URL is not configured we keep users on CKAN."""
+    mock_config.pop("ckanext.oidc_pkce_bpa.profile_redirect_url", None)
+
+    messages = []
+    monkeypatch.setattr(tk, "h", SimpleNamespace(flash_error=lambda msg: messages.append(msg)), raising=False)
+    monkeypatch.setattr(tk, "redirect_to", lambda endpoint, **kwargs: redirect(f"/mock/{endpoint}"), raising=False)
+    monkeypatch.setattr(tk, "url_for", lambda endpoint, **kwargs: f"/mock/{endpoint}", raising=False)
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    register_oidc_blueprint(app)
+
+    @app.before_request
+    def _fake_user():
+        g.user = "alice"
+        g.userobj = SimpleNamespace(name="alice")
+
+    client = app.test_client()
+    response = client.get("/user/profile/update")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/mock/user.edit")
+    assert messages == ["Profile update portal URL is not configured."]
