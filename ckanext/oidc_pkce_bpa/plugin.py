@@ -222,7 +222,10 @@ def force_oidc_login():
         log.warning("Legacy login view not found; falling back to OIDC login.")
 
     # redirect into OIDC login route inside CKAN
-    return tk.redirect_to("oidc_pkce.login")
+    response = tk.redirect_to("oidc_pkce.login")
+    if isinstance(response, str):
+        return redirect(response)
+    return response
 
 
 @public_bp.route("/user/profile/update")
