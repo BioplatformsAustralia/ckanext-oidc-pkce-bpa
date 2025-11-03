@@ -17,6 +17,8 @@ from ckanext.oidc_pkce import views as oidc_views
 def register_oidc_blueprint(app):
     """Register the core OIDC blueprint and re-apply BPA overrides for each test app."""
     app.register_blueprint(oidc_views.bp)
+    app.register_blueprint(plugin_module.public_bp)
+    app.register_blueprint(plugin_module.admin_bp)
 
     def _fallback_force_login():
         return tk.redirect_to("oidc_pkce.login")
