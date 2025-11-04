@@ -221,7 +221,12 @@ def force_oidc_login():
             return legacy_login_view()
         log.warning("Legacy login view not found; falling back to OIDC login.")
 
+    prompt_login = session.pop(SESSION_FORCE_PROMPT, False)
+
     # redirect into OIDC login route inside CKAN
+    if prompt_login:
+        return _build_oidc_login_response(prompt="login")
+
     return _build_oidc_login_response()
 
 

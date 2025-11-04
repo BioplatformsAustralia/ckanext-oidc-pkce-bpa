@@ -674,7 +674,7 @@ def test_force_login_triggers_prompt_when_flagged(monkeypatch, mock_config):
 
     parsed = urlparse(response.headers["Location"])
     query = parse_qs(parsed.query)
-    assert query.get("prompt") is None
+    assert query.get("prompt") == ["login"]
     assert query.get("state") == ["appstate"]
     assert query.get("code_challenge") == ["challenge"]
 
