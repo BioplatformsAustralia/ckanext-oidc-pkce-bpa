@@ -644,7 +644,7 @@ def test_callback_access_denied_redirects_home(monkeypatch):
 
 
 def test_force_login_triggers_prompt_when_flagged(monkeypatch, mock_config):
-    """SSO denial forces the next login attempt to show the Auth0 prompt."""
+    """Force-login produces a direct Auth0 redirect with the expected PKCE params."""
     monkeypatch.setattr(plugin_module.oidc_config, "client_id", lambda: "cid")
     monkeypatch.setattr(plugin_module.oidc_config, "redirect_url", lambda: "https://ckan.example.com/callback")
     monkeypatch.setattr(plugin_module.oidc_config, "scope", lambda: "openid profile email")
@@ -674,7 +674,7 @@ def test_force_login_triggers_prompt_when_flagged(monkeypatch, mock_config):
 
     parsed = urlparse(response.headers["Location"])
     query = parse_qs(parsed.query)
-    assert query.get("prompt") == ["login"]
+    assert query.get("prompt") is None
     assert query.get("state") == ["appstate"]
     assert query.get("code_challenge") == ["challenge"]
 
@@ -714,7 +714,8 @@ def test_login_route_always_redirects_to_oidc(monkeypatch, mock_config):
 
     response = client.get("/user/login")
     assert response.status_code == 302
-    assert response.headers["Location"].endswith("/mock/oidc_pkce.login")
+    location = response.headers["Location"]
+    assert location.startswith("https://auth.example.com/authorize")
 
 
 def test_profile_update_route_redirects_to_portal(monkeypatch, mock_config):
