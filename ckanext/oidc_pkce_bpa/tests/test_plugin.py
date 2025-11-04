@@ -649,9 +649,16 @@ def test_force_login_triggers_prompt_when_flagged(monkeypatch, mock_config):
     monkeypatch.setattr(plugin_module.oidc_config, "redirect_url", lambda: "https://ckan.example.com/callback")
     monkeypatch.setattr(plugin_module.oidc_config, "scope", lambda: "openid profile email")
     monkeypatch.setattr(plugin_module.oidc_config, "auth_url", lambda: "https://auth.example.com/authorize")
+    monkeypatch.setattr(oidc_views.config, "client_id", lambda: "cid")
+    monkeypatch.setattr(oidc_views.config, "redirect_url", lambda: "https://ckan.example.com/callback")
+    monkeypatch.setattr(oidc_views.config, "scope", lambda: "openid profile email")
+    monkeypatch.setattr(oidc_views.config, "auth_url", lambda: "https://auth.example.com/authorize")
     monkeypatch.setattr(plugin_module.oidc_utils, "code_verifier", lambda: "verifier")
     monkeypatch.setattr(plugin_module.oidc_utils, "app_state", lambda: "appstate")
     monkeypatch.setattr(plugin_module.oidc_utils, "code_challenge", lambda _verifier: "challenge")
+    monkeypatch.setattr(oidc_views.utils, "code_verifier", lambda: "verifier")
+    monkeypatch.setattr(oidc_views.utils, "app_state", lambda: "appstate")
+    monkeypatch.setattr(oidc_views.utils, "code_challenge", lambda _verifier: "challenge")
 
     app = Flask(__name__)
     app.secret_key = "testing"
@@ -681,6 +688,20 @@ def test_force_login_triggers_prompt_when_flagged(monkeypatch, mock_config):
 def test_login_route_always_redirects_to_oidc(monkeypatch, mock_config):
     """The login route keeps redirecting to the OIDC flow even if legacy flags exist."""
     monkeypatch.setattr(tk, "redirect_to", lambda endpoint: f"/mock/{endpoint}")
+    monkeypatch.setattr(plugin_module.oidc_config, "client_id", lambda: "cid")
+    monkeypatch.setattr(plugin_module.oidc_config, "redirect_url", lambda: "https://ckan.example.com/callback")
+    monkeypatch.setattr(plugin_module.oidc_config, "scope", lambda: "openid profile email")
+    monkeypatch.setattr(plugin_module.oidc_config, "auth_url", lambda: "https://auth.example.com/authorize")
+    monkeypatch.setattr(oidc_views.config, "client_id", lambda: "cid")
+    monkeypatch.setattr(oidc_views.config, "redirect_url", lambda: "https://ckan.example.com/callback")
+    monkeypatch.setattr(oidc_views.config, "scope", lambda: "openid profile email")
+    monkeypatch.setattr(oidc_views.config, "auth_url", lambda: "https://auth.example.com/authorize")
+    monkeypatch.setattr(plugin_module.oidc_utils, "code_verifier", lambda: "verifier")
+    monkeypatch.setattr(plugin_module.oidc_utils, "app_state", lambda: "appstate")
+    monkeypatch.setattr(plugin_module.oidc_utils, "code_challenge", lambda _verifier: "challenge")
+    monkeypatch.setattr(oidc_views.utils, "code_verifier", lambda: "verifier")
+    monkeypatch.setattr(oidc_views.utils, "app_state", lambda: "appstate")
+    monkeypatch.setattr(oidc_views.utils, "code_challenge", lambda _verifier: "challenge")
 
     app = Flask(__name__)
     app.secret_key = "testing"
