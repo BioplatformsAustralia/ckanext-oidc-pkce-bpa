@@ -17,6 +17,8 @@ from ckanext.oidc_pkce import views as oidc_views
 def register_oidc_blueprint(app):
     """Register the core OIDC blueprint and re-apply BPA overrides for each test app."""
     app.register_blueprint(oidc_views.bp)
+    app.register_blueprint(plugin_module.public_bp)
+    app.register_blueprint(plugin_module.admin_bp)
 
     def _fallback_force_login():
         return tk.redirect_to("oidc_pkce.login")
@@ -58,6 +60,7 @@ def mock_config(monkeypatch):
         "ckanext.oidc_pkce_bpa.role_org_mapping": json.dumps({"tsi-member": ["org-123"]}),
         "ckanext.oidc_pkce_bpa.username_claim": "https://biocommons.org.au/username",
         "ckanext.oidc_pkce_bpa.register_redirect_url": "https://example.com/register",
+        "ckanext.oidc_pkce_bpa.profile_redirect_url": "https://profiles.example.com/profile",
     }
 
     utils.get_auth0_settings.cache_clear()
@@ -640,15 +643,22 @@ def test_callback_access_denied_redirects_home(monkeypatch):
 
 
 
-def test_force_login_triggers_prompt_when_flagged(monkeypatch):
-    """SSO denial forces the next login attempt to show the Auth0 prompt."""
+def test_force_login_triggers_prompt_when_flagged(monkeypatch, mock_config):
+    """Force-login produces a direct Auth0 redirect with the expected PKCE params."""
     monkeypatch.setattr(plugin_module.oidc_config, "client_id", lambda: "cid")
     monkeypatch.setattr(plugin_module.oidc_config, "redirect_url", lambda: "https://ckan.example.com/callback")
     monkeypatch.setattr(plugin_module.oidc_config, "scope", lambda: "openid profile email")
     monkeypatch.setattr(plugin_module.oidc_config, "auth_url", lambda: "https://auth.example.com/authorize")
+    monkeypatch.setattr(oidc_views.config, "client_id", lambda: "cid")
+    monkeypatch.setattr(oidc_views.config, "redirect_url", lambda: "https://ckan.example.com/callback")
+    monkeypatch.setattr(oidc_views.config, "scope", lambda: "openid profile email")
+    monkeypatch.setattr(oidc_views.config, "auth_url", lambda: "https://auth.example.com/authorize")
     monkeypatch.setattr(plugin_module.oidc_utils, "code_verifier", lambda: "verifier")
     monkeypatch.setattr(plugin_module.oidc_utils, "app_state", lambda: "appstate")
     monkeypatch.setattr(plugin_module.oidc_utils, "code_challenge", lambda _verifier: "challenge")
+    monkeypatch.setattr(oidc_views.utils, "code_verifier", lambda: "verifier")
+    monkeypatch.setattr(oidc_views.utils, "app_state", lambda: "appstate")
+    monkeypatch.setattr(oidc_views.utils, "code_challenge", lambda _verifier: "challenge")
 
     app = Flask(__name__)
     app.secret_key = "testing"
@@ -675,9 +685,23 @@ def test_force_login_triggers_prompt_when_flagged(monkeypatch):
         assert sess[plugin_module.SESSION_VERIFIER] == "verifier"
 
 
-def test_login_route_always_redirects_to_oidc(monkeypatch):
+def test_login_route_always_redirects_to_oidc(monkeypatch, mock_config):
     """The login route keeps redirecting to the OIDC flow even if legacy flags exist."""
     monkeypatch.setattr(tk, "redirect_to", lambda endpoint: f"/mock/{endpoint}")
+    monkeypatch.setattr(plugin_module.oidc_config, "client_id", lambda: "cid")
+    monkeypatch.setattr(plugin_module.oidc_config, "redirect_url", lambda: "https://ckan.example.com/callback")
+    monkeypatch.setattr(plugin_module.oidc_config, "scope", lambda: "openid profile email")
+    monkeypatch.setattr(plugin_module.oidc_config, "auth_url", lambda: "https://auth.example.com/authorize")
+    monkeypatch.setattr(oidc_views.config, "client_id", lambda: "cid")
+    monkeypatch.setattr(oidc_views.config, "redirect_url", lambda: "https://ckan.example.com/callback")
+    monkeypatch.setattr(oidc_views.config, "scope", lambda: "openid profile email")
+    monkeypatch.setattr(oidc_views.config, "auth_url", lambda: "https://auth.example.com/authorize")
+    monkeypatch.setattr(plugin_module.oidc_utils, "code_verifier", lambda: "verifier")
+    monkeypatch.setattr(plugin_module.oidc_utils, "app_state", lambda: "appstate")
+    monkeypatch.setattr(plugin_module.oidc_utils, "code_challenge", lambda _verifier: "challenge")
+    monkeypatch.setattr(oidc_views.utils, "code_verifier", lambda: "verifier")
+    monkeypatch.setattr(oidc_views.utils, "app_state", lambda: "appstate")
+    monkeypatch.setattr(oidc_views.utils, "code_challenge", lambda _verifier: "challenge")
 
     app = Flask(__name__)
     app.secret_key = "testing"
@@ -690,4 +714,79 @@ def test_login_route_always_redirects_to_oidc(monkeypatch):
 
     response = client.get("/user/login")
     assert response.status_code == 302
-    assert response.headers["Location"].endswith("/mock/oidc_pkce.login")
+    location = response.headers["Location"]
+    assert location.startswith("https://auth.example.com/authorize")
+
+
+def test_profile_update_route_redirects_to_portal(monkeypatch, mock_config):
+    """Clicking the profile update route sends the user to the portal."""
+    messages = []
+    monkeypatch.setattr(tk, "h", SimpleNamespace(flash_error=lambda msg: messages.append(msg)), raising=False)
+    monkeypatch.setattr(tk, "redirect_to", lambda endpoint, **kwargs: redirect(f"/mock/{endpoint}"), raising=False)
+    monkeypatch.setattr(tk, "url_for", lambda endpoint, **kwargs: f"/mock/{endpoint}", raising=False)
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    register_oidc_blueprint(app)
+
+    @app.before_request
+    def _fake_user():
+        g.user = "alice"
+        g.userobj = SimpleNamespace(
+            name="alice",
+            id="user-1",
+            email="alice@example.com",
+            display_name="Alice Example",
+        )
+
+    client = app.test_client()
+    response = client.get("/user/profile/update")
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == "https://profiles.example.com/profile"
+    assert messages == []
+
+
+def test_profile_update_route_requires_login(monkeypatch, mock_config):
+    """Unauthenticated users are bounced back to the CKAN login screen."""
+    messages = []
+    monkeypatch.setattr(tk, "h", SimpleNamespace(flash_error=lambda msg: messages.append(msg)), raising=False)
+    monkeypatch.setattr(tk, "redirect_to", lambda endpoint, **kwargs: redirect(f"/mock/{endpoint}"), raising=False)
+    monkeypatch.setattr(tk, "url_for", lambda endpoint, **kwargs: f"/mock/{endpoint}", raising=False)
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    register_oidc_blueprint(app)
+
+    client = app.test_client()
+    response = client.get("/user/profile/update")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/mock/user.login")
+    assert messages == ["Please log in to update your profile."]
+
+
+def test_profile_update_route_handles_missing_config(monkeypatch, mock_config):
+    """If the portal URL is not configured we keep users on CKAN."""
+    mock_config.pop("ckanext.oidc_pkce_bpa.profile_redirect_url", None)
+
+    messages = []
+    monkeypatch.setattr(tk, "h", SimpleNamespace(flash_error=lambda msg: messages.append(msg)), raising=False)
+    monkeypatch.setattr(tk, "redirect_to", lambda endpoint, **kwargs: redirect(f"/mock/{endpoint}"), raising=False)
+    monkeypatch.setattr(tk, "url_for", lambda endpoint, **kwargs: f"/mock/{endpoint}", raising=False)
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    register_oidc_blueprint(app)
+
+    @app.before_request
+    def _fake_user():
+        g.user = "alice"
+        g.userobj = SimpleNamespace(name="alice")
+
+    client = app.test_client()
+    response = client.get("/user/profile/update")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/mock/user.edit")
+    assert messages == ["Profile update portal URL is not configured."]
