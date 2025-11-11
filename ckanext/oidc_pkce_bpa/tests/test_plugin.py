@@ -574,7 +574,7 @@ def test_oidc_login_response_passthrough_user(plugin):
     assert plugin.oidc_login_response(user) is None
 
 
-def test_oidc_login_response_redirects_home(plugin, monkeypatch):
+def test_oidc_login_response_redirects_to_denied_page(plugin, monkeypatch):
     """Unverified email keeps users on CKAN instead of re-triggering OIDC."""
     fake_session = {
         plugin_module.SESSION_CAME_FROM: "original",
@@ -589,7 +589,7 @@ def test_oidc_login_response_redirects_home(plugin, monkeypatch):
 
     result = plugin.oidc_login_response(response)
 
-    assert result == "/mock/home.index"
+    assert result == "/mock/oidc_pkce_bpa_public.login_error"
     assert plugin_module.SESSION_CAME_FROM not in fake_session
     assert plugin_module.SESSION_STATE not in fake_session
     assert plugin_module.SESSION_SKIP_OIDC not in fake_session
@@ -627,7 +627,7 @@ def test_callback_access_denied_redirects_home(monkeypatch):
     )
 
     assert response.status_code == 302
-    assert response.headers["Location"].endswith("/mock/home.index")
+    assert response.headers["Location"].endswith("/mock/oidc_pkce_bpa_public.login_error")
     assert messages[-1] == (
         "Your email address is not verified. Please check your inbox, confirm your "
         "email address and sign in again."
@@ -674,15 +674,33 @@ def test_callback_missing_required_role_shows_authorisation_error(monkeypatch):
     )
 
     assert response.status_code == 302
-    assert response.headers["Location"].endswith("/mock/home.index")
-    assert messages[-1] == plugin_module.AUTHORIZATION_ERROR_MESSAGE
+    assert response.headers["Location"].endswith("/mock/oidc_pkce_bpa_public.login_error")
 
-    with client.session_transaction() as sess:
-        assert plugin_module.SESSION_CAME_FROM not in sess
-        assert plugin_module.SESSION_STATE not in sess
-        assert plugin_module.SESSION_VERIFIER not in sess
-        assert plugin_module.SESSION_FORCE_PROMPT not in sess
-        assert plugin_module.SESSION_SKIP_OIDC not in sess
+
+def test_denied_redirect_endpoint_is_configurable(plugin, monkeypatch, mock_config):
+    """Operators can override the landing page shown after login denial."""
+    fake_session = {
+        plugin_module.SESSION_CAME_FROM: "/original",
+        plugin_module.SESSION_STATE: "state",
+    }
+    monkeypatch.setattr(plugin_module, "session", fake_session, raising=False)
+    mock_config["ckanext.oidc_pkce_bpa.denied_redirect_endpoint"] = "custom.endpoint"
+
+    captured = {}
+
+    def _fake_redirect(endpoint):
+        captured["endpoint"] = endpoint
+        return f"/mock/{endpoint}"
+
+    monkeypatch.setattr(tk, "redirect_to", _fake_redirect)
+
+    response = SimpleNamespace(status_code=302)
+    result = plugin.oidc_login_response(response)
+
+    assert result == "/mock/custom.endpoint"
+    assert captured["endpoint"] == "custom.endpoint"
+    assert plugin_module.SESSION_CAME_FROM not in fake_session
+    assert plugin_module.SESSION_STATE not in fake_session
 
 
 

@@ -13,12 +13,14 @@ from ckanext.oidc_pkce import views as oidc_views
 from ckan import authz, model
 from ckan.common import g, session
 from ckan.plugins import SingletonPlugin, implements
-from ckan.plugins.interfaces import IBlueprint, IAuthenticator
+from ckan.plugins.interfaces import IBlueprint, IAuthenticator, IConfigurer
 import ckan.plugins.toolkit as tk
 
 from ckanext.oidc_pkce.interfaces import IOidcPkce
 
 AUTHORIZATION_ERROR_MESSAGE = "You are not authorized to access this service."
+DEFAULT_DENIED_REDIRECT_ENDPOINT = "oidc_pkce_bpa_public.login_error"
+DEFAULT_SUPPORT_EMAIL = "aai-dev@biocommons.org.au"
 
 SESSION_CAME_FROM = oidc_views.SESSION_CAME_FROM
 SESSION_STATE = oidc_views.SESSION_STATE
@@ -32,6 +34,21 @@ _ORIGINAL_OIDC_LOGIN = None
 _ORIGINAL_FORCE_LOGIN = None
 SESSION_ADMIN_LOGIN_TOKEN = "ckanext:oidc_pkce_bpa:admin_login_token"
 SESSION_ADMIN_LOGIN_TARGET = "ckanext:oidc_pkce_bpa:admin_login_target"
+
+
+def _get_denied_redirect_endpoint():
+    return tk.config.get(
+        "ckanext.oidc_pkce_bpa.denied_redirect_endpoint",
+        DEFAULT_DENIED_REDIRECT_ENDPOINT,
+    )
+
+
+def _redirect_to_denied_login_page():
+    return tk.redirect_to(_get_denied_redirect_endpoint())
+
+
+def _get_support_email():
+    return tk.config.get("ckanext.oidc_pkce_bpa.support_email", DEFAULT_SUPPORT_EMAIL)
 
 
 def _clear_denied_login_session(*, force_prompt: bool):
@@ -53,7 +70,7 @@ def _oidc_callback_with_email_check(*args, **kwargs):
         log.warning("OIDC callback denied access due to missing Auth0 role: %s", error_description or error)
         tk.h.flash_error(AUTHORIZATION_ERROR_MESSAGE)
         _clear_denied_login_session(force_prompt=False)
-        return tk.redirect_to("home.index")
+        return _redirect_to_denied_login_page()
 
     if error == "access_denied":
         message = error_description or "OIDC login was denied."
@@ -67,7 +84,7 @@ def _oidc_callback_with_email_check(*args, **kwargs):
         log.warning("OIDC callback denied access: %s", error_description or error)
         tk.h.flash_error(message)
         _clear_denied_login_session(force_prompt=True)
-        return tk.redirect_to("home.index")
+        return _redirect_to_denied_login_page()
 
     return _ORIGINAL_OIDC_CALLBACK(*args, **kwargs)
 
@@ -275,10 +292,27 @@ def redirect_profile_update():
     return redirect(portal_url)
 
 
+@public_bp.route("/user/login/error")
+def login_error():
+    support_email = _get_support_email()
+    return tk.render(
+        "oidc_pkce_bpa/login_error.html",
+        extra_vars={
+            "support_email": support_email,
+        },
+    )
+
+
 class OidcPkceBpaPlugin(SingletonPlugin):
     implements(IOidcPkce, inherit=True)
     implements(IAuthenticator, inherit=True)
     implements(IBlueprint)
+    implements(IConfigurer)
+
+    # IConfigurer
+
+    def update_config(self, config):
+        tk.add_template_directory(config, "templates")
 
     def get_oidc_user(self, userinfo: dict) -> model.User:
         """
@@ -352,7 +386,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
         session.pop(SESSION_CAME_FROM, None)
         session.pop(SESSION_STATE, None)
-        return tk.redirect_to("home.index")
+        return _redirect_to_denied_login_page()
 
     # IAuthenticator
 
