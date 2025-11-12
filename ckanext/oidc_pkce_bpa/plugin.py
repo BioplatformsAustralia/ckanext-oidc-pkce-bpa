@@ -20,7 +20,7 @@ from ckanext.oidc_pkce.interfaces import IOidcPkce
 
 AUTHORIZATION_ERROR_MESSAGE = "You are not authorized to access this service."
 DEFAULT_DENIED_REDIRECT_ENDPOINT = "oidc_pkce_bpa_public.login_error"
-DEFAULT_SUPPORT_EMAIL = "aai-dev@biocommons.org.au"
+SUPPORT_EMAIL_CONFIG_KEY = "ckanext.oidc_pkce_bpa.support_email"
 
 SESSION_CAME_FROM = oidc_views.SESSION_CAME_FROM
 SESSION_STATE = oidc_views.SESSION_STATE
@@ -48,7 +48,10 @@ def _redirect_to_denied_login_page():
 
 
 def _get_support_email():
-    return tk.config.get("ckanext.oidc_pkce_bpa.support_email", DEFAULT_SUPPORT_EMAIL)
+    support_email = tk.config.get(SUPPORT_EMAIL_CONFIG_KEY)
+    if not support_email:
+        raise tk.ValidationError(f"Missing '{SUPPORT_EMAIL_CONFIG_KEY}' configuration.")
+    return support_email
 
 
 def _clear_denied_login_session(*, force_prompt: bool):
@@ -313,6 +316,10 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
     def update_config(self, config):
         tk.add_template_directory(config, "templates")
+        if not tk.config.get(SUPPORT_EMAIL_CONFIG_KEY):
+            raise tk.ValidationError(
+                f"Missing required '{SUPPORT_EMAIL_CONFIG_KEY}' setting in CKAN configuration."
+            )
 
     def get_oidc_user(self, userinfo: dict) -> model.User:
         """

@@ -113,13 +113,18 @@ If ckanext-oidc-pkce-bpa should be available on PyPI you can follow these steps 
 
 ## Development notes: Redirect Behavior on Auth0 Callback Errors
 
-When the Auth0 OIDC callback denies access (for example, if a user cancels login or an authorization error occurs), this extension intentionally redirects the user to `home.index` instead of `/user/login` ([see source](./ckanext/oidc_pkce_bpa/plugin.py)):
+When the Auth0 OIDC callback denies access (for example, if a user cancels login or an authorization error occurs), this extension intentionally redirects the user to a configurable CKAN endpoint that does **not** re-trigger the login loop (defaults to `oidc_pkce_bpa_public.login_error`) ([see source](./ckanext/oidc_pkce_bpa/plugin.py)):
 
 ```python
 session.pop(SESSION_STATE, None)
 session.pop(SESSION_VERIFIER, None)
 session[SESSION_FORCE_PROMPT] = True
-return tk.redirect_to("home.index")
+return tk.redirect_to(
+    tk.config.get(
+        "ckanext.oidc_pkce_bpa.denied_redirect_endpoint",
+        "oidc_pkce_bpa_public.login_error",
+    )
+)
 ```
 
 #### Rationale
@@ -127,12 +132,12 @@ return tk.redirect_to("home.index")
 The `/user/login` route in this extension is overridden to immediately start the OIDC login flow.
 If a user is redirected there after an Auth0 error, it would immediately trigger another OIDC login attempt, creating an infinite redirect loop and preventing the user from ever seeing the flashed error message.
 
-Redirecting to `home.index` provides a stable landing point on the CKAN front page, allowing the user to:
+Redirecting to a CKAN page provides a stable landing point, allowing the user to:
 - See the flashed error banner
 - Recover gracefully
 - Decide whether to retry login or navigate elsewhere.
 
-This design ensures that OIDC errors are surfaced clearly to the user while avoiding repeated automatic login attempts.
+The default `oidc_pkce_bpa_public.login_error` view lives at `/user/login/error`, contains BPA-specific support messaging, and **requires** the `ckanext.oidc_pkce_bpa.support_email` setting (for example `aai-dev@biocommons.org.au`). Override `ckanext.oidc_pkce_bpa.denied_redirect_endpoint` if you need to render a different page, but keep it pointed at a CKAN route that does **not** re-trigger the OIDC login flow.
 
 
 ## License

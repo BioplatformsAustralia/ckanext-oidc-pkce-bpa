@@ -61,6 +61,7 @@ def mock_config(monkeypatch):
         "ckanext.oidc_pkce_bpa.username_claim": "https://biocommons.org.au/username",
         "ckanext.oidc_pkce_bpa.register_redirect_url": "https://example.com/register",
         "ckanext.oidc_pkce_bpa.profile_redirect_url": "https://profiles.example.com/profile",
+        "ckanext.oidc_pkce_bpa.support_email": "support@example.com",
     }
 
     utils.get_auth0_settings.cache_clear()
@@ -68,6 +69,32 @@ def mock_config(monkeypatch):
     monkeypatch.setattr(tk, "config", fake_cfg, raising=False)
     yield fake_cfg
     utils.get_auth0_settings.cache_clear()
+
+
+def test_update_config_requires_support_email(monkeypatch, plugin):
+    """Plugin startup fails fast when the support email config is missing."""
+    monkeypatch.setattr(tk, "config", {}, raising=False)
+    monkeypatch.setattr(tk, "add_template_directory", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(tk.ValidationError, match=plugin_module.SUPPORT_EMAIL_CONFIG_KEY):
+        plugin.update_config({})
+
+
+def test_update_config_registers_templates(monkeypatch, plugin):
+    """Template directory registration still occurs when config is valid."""
+    fake_cfg = {plugin_module.SUPPORT_EMAIL_CONFIG_KEY: "help@example.com"}
+    monkeypatch.setattr(tk, "config", fake_cfg, raising=False)
+
+    captured = {}
+
+    def _fake_add_template_directory(cfg, directory):
+        captured["args"] = (cfg, directory)
+
+    monkeypatch.setattr(tk, "add_template_directory", _fake_add_template_directory)
+
+    plugin.update_config("config_object")
+
+    assert captured["args"] == ("config_object", "templates")
 
 
 @pytest.fixture
