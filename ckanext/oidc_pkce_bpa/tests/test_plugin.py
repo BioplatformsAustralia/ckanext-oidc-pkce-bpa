@@ -704,6 +704,60 @@ def test_callback_missing_required_role_shows_authorisation_error(monkeypatch):
     assert response.headers["Location"].endswith("/mock/oidc_pkce_bpa_public.login_error")
 
 
+def test_callback_error_uri_surfaces_help_link(monkeypatch, mock_config):
+    """When Auth0 supplies an error_uri we keep the user on CKAN with a link."""
+    monkeypatch.setattr(
+        tk,
+        "redirect_to",
+        lambda endpoint: redirect(f"/mock/{endpoint}"),
+    )
+    captured_render = {}
+
+    def _fake_render(template, extra_vars=None):
+        captured_render["template"] = template
+        captured_render["extra_vars"] = extra_vars or {}
+        return (
+            f"Rendered {template}: {captured_render['extra_vars'].get('error_description')} "
+            f"@ {captured_render['extra_vars'].get('error_uri')}"
+        )
+
+    monkeypatch.setattr(tk, "render", _fake_render, raising=False)
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    register_oidc_blueprint(app)
+
+    client = app.test_client()
+
+    with client.session_transaction() as sess:
+        sess[plugin_module.SESSION_CAME_FROM] = "original"
+        sess[plugin_module.SESSION_STATE] = "state"
+        sess[plugin_module.SESSION_VERIFIER] = "verifier"
+
+    response = client.get(
+        "/user/login/oidc-pkce/callback?error=invalid_request&error_description=Need%20approval"
+        "&error_uri=https%3A%2F%2Fstatus.example.com%2Ferrors%2Fneed-approval"
+    )
+
+    assert response.status_code == 200
+    assert captured_render["template"] == "oidc_pkce_bpa/login_error.html"
+    assert captured_render["extra_vars"]["error_description"] == "Need approval"
+    assert (
+        captured_render["extra_vars"]["error_uri"]
+        == "https://status.example.com/errors/need-approval"
+    )
+    body = response.data.decode("utf-8")
+    assert "Need approval" in body
+    assert "https://status.example.com/errors/need-approval" in body
+
+    with client.session_transaction() as sess:
+        assert plugin_module.SESSION_CAME_FROM not in sess
+        assert plugin_module.SESSION_STATE not in sess
+        assert plugin_module.SESSION_VERIFIER not in sess
+        assert plugin_module.SESSION_FORCE_PROMPT not in sess
+        assert plugin_module.SESSION_SKIP_OIDC not in sess
+
+
 def test_denied_redirect_endpoint_is_configurable(plugin, monkeypatch, mock_config):
     """Operators can override the landing page shown after login denial."""
     fake_session = {

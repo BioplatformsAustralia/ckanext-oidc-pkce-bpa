@@ -9,16 +9,29 @@
   <article class="module">
     <div class="module-content">
       <h1>We could not complete your sign in</h1>
+      {% if error_description %}
+      <div class="alert alert-danger login-error-details">
+        <p>{{ error_description }}</p>
+        {% if error_uri %}
+        <p>
+          <a href="{{ error_uri }}" target="_blank" rel="noopener noreferrer">
+            View detailed login error information
+          </a>
+        </p>
+        {% endif %}
+      </div>
+      {% endif %}
       <p>
         If you believe you should have access, please contact
-        <a href="mailto:{{ support_email }}">{{ support_email }}</a> with your email address registered with your Biocommons account. Our team will help resolve
-        the issue as quickly as possible.
+        <a href="mailto:{{ support_email }}">{{ support_email }}</a>
+        with the email tied to your Biocommons Access account.
+        Include the address used, plus the date and time of the failed login,
+        and our team will help resolve the issue as quickly as possible.
       </p>
       <p>
         You can return to the <a href="{{ h.url_for('home.index') }}">BPA Data Portal home page</a>
         or try signing in again once your access has been updated.
       </p>
-      <a class="btn btn-primary" href="{{ h.url_for('home.index') }}">Back to BPA Data Portal</a>
     </div>
   </article>
 </div>

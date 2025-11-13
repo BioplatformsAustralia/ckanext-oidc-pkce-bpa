@@ -67,11 +67,12 @@ def _clear_denied_login_session(*, force_prompt: bool):
 def _oidc_callback_with_email_check(*args, **kwargs):
     """Intercept Auth0 callback errors to keep users on CKAN with clear messaging."""
     error = tk.request.args.get("error")
-    error_description = tk.request.args.get("error_description") or ""
+    error_uri = tk.request.args.get("error_uri")
+    error_description = tk.request.args.get("error_description") or AUTHORIZATION_ERROR_MESSAGE
 
     if error == "missing_required_role" or "missing_required_role" in error_description:
         log.warning("OIDC callback denied access due to missing Auth0 role: %s", error_description or error)
-        tk.h.flash_error(AUTHORIZATION_ERROR_MESSAGE)
+        tk.h.flash_error(error_description)
         _clear_denied_login_session(force_prompt=False)
         return _redirect_to_denied_login_page()
 
@@ -88,6 +89,22 @@ def _oidc_callback_with_email_check(*args, **kwargs):
         tk.h.flash_error(message)
         _clear_denied_login_session(force_prompt=True)
         return _redirect_to_denied_login_page()
+
+    if error_uri:
+        log.warning(
+            "OIDC callback denied access with error_uri '%s': %s",
+            error_uri,
+            error_description or error,
+        )
+        _clear_denied_login_session(force_prompt=False)
+        return tk.render(
+            "oidc_pkce_bpa/login_error.html",
+            extra_vars={
+                "support_email": _get_support_email(),
+                "error_description": error_description,
+                "error_uri": error_uri,
+            },
+        )
 
     return _ORIGINAL_OIDC_CALLBACK(*args, **kwargs)
 
@@ -302,6 +319,8 @@ def login_error():
         "oidc_pkce_bpa/login_error.html",
         extra_vars={
             "support_email": support_email,
+            "error_description": None,
+            "error_uri": None,
         },
     )
 
