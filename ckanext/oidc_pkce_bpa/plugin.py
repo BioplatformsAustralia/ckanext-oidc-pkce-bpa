@@ -13,10 +13,14 @@ from ckanext.oidc_pkce import views as oidc_views
 from ckan import authz, model
 from ckan.common import g, session
 from ckan.plugins import SingletonPlugin, implements
-from ckan.plugins.interfaces import IBlueprint, IAuthenticator
+from ckan.plugins.interfaces import IBlueprint, IAuthenticator, IConfigurer
 import ckan.plugins.toolkit as tk
 
 from ckanext.oidc_pkce.interfaces import IOidcPkce
+
+AUTHORIZATION_ERROR_MESSAGE = "You are not authorized to access this service."
+DEFAULT_DENIED_REDIRECT_ENDPOINT = "oidc_pkce_bpa_public.login_error"
+SUPPORT_EMAIL_CONFIG_KEY = "ckanext.oidc_pkce_bpa.support_email"
 
 SESSION_CAME_FROM = oidc_views.SESSION_CAME_FROM
 SESSION_STATE = oidc_views.SESSION_STATE
@@ -32,11 +36,47 @@ SESSION_ADMIN_LOGIN_TOKEN = "ckanext:oidc_pkce_bpa:admin_login_token"
 SESSION_ADMIN_LOGIN_TARGET = "ckanext:oidc_pkce_bpa:admin_login_target"
 
 
+def _get_denied_redirect_endpoint():
+    return tk.config.get(
+        "ckanext.oidc_pkce_bpa.denied_redirect_endpoint",
+        DEFAULT_DENIED_REDIRECT_ENDPOINT,
+    )
+
+
+def _redirect_to_denied_login_page():
+    return tk.redirect_to(_get_denied_redirect_endpoint())
+
+
+def _get_support_email():
+    support_email = tk.config.get(SUPPORT_EMAIL_CONFIG_KEY)
+    if not support_email:
+        raise tk.ValidationError(f"Missing '{SUPPORT_EMAIL_CONFIG_KEY}' configuration.")
+    return support_email
+
+
+def _clear_denied_login_session(*, force_prompt: bool):
+    session.pop(SESSION_CAME_FROM, None)
+    session.pop(SESSION_STATE, None)
+    session.pop(SESSION_VERIFIER, None)
+    if force_prompt:
+        session[SESSION_FORCE_PROMPT] = True
+    else:
+        session.pop(SESSION_FORCE_PROMPT, None)
+
+
 def _oidc_callback_with_email_check(*args, **kwargs):
-    """Intercept Auth0 "access_denied" errors to keep users on CKAN."""
+    """Intercept Auth0 callback errors to keep users on CKAN with clear messaging."""
     error = tk.request.args.get("error")
+    error_uri = tk.request.args.get("error_uri")
+    error_description = tk.request.args.get("error_description") or AUTHORIZATION_ERROR_MESSAGE
+
+    if error == "missing_required_role" or "missing_required_role" in error_description:
+        log.warning("OIDC callback denied access due to missing Auth0 role: %s", error_description or error)
+        tk.h.flash_error(error_description)
+        _clear_denied_login_session(force_prompt=False)
+        return _redirect_to_denied_login_page()
+
     if error == "access_denied":
-        error_description = tk.request.args.get("error_description") or ""
         message = error_description or "OIDC login was denied."
 
         if "email" in error_description.lower() and "verif" in error_description.lower():
@@ -47,11 +87,24 @@ def _oidc_callback_with_email_check(*args, **kwargs):
 
         log.warning("OIDC callback denied access: %s", error_description or error)
         tk.h.flash_error(message)
-        session.pop(SESSION_CAME_FROM, None)
-        session.pop(SESSION_STATE, None)
-        session.pop(SESSION_VERIFIER, None)
-        session[SESSION_FORCE_PROMPT] = True
-        return tk.redirect_to("home.index")
+        _clear_denied_login_session(force_prompt=True)
+        return _redirect_to_denied_login_page()
+
+    if error_uri:
+        log.warning(
+            "OIDC callback denied access with error_uri '%s': %s",
+            error_uri,
+            error_description or error,
+        )
+        _clear_denied_login_session(force_prompt=False)
+        return tk.render(
+            "oidc_pkce_bpa/login_error.html",
+            extra_vars={
+                "support_email": _get_support_email(),
+                "error_description": error_description,
+                "error_uri": error_uri,
+            },
+        )
 
     return _ORIGINAL_OIDC_CALLBACK(*args, **kwargs)
 
@@ -259,10 +312,33 @@ def redirect_profile_update():
     return redirect(portal_url)
 
 
+@public_bp.route("/user/login/error")
+def login_error():
+    support_email = _get_support_email()
+    return tk.render(
+        "oidc_pkce_bpa/login_error.html",
+        extra_vars={
+            "support_email": support_email,
+            "error_description": None,
+            "error_uri": None,
+        },
+    )
+
+
 class OidcPkceBpaPlugin(SingletonPlugin):
     implements(IOidcPkce, inherit=True)
     implements(IAuthenticator, inherit=True)
     implements(IBlueprint)
+    implements(IConfigurer)
+
+    # IConfigurer
+
+    def update_config(self, config):
+        tk.add_template_directory(config, "templates")
+        if not tk.config.get(SUPPORT_EMAIL_CONFIG_KEY):
+            raise tk.ValidationError(
+                f"Missing required '{SUPPORT_EMAIL_CONFIG_KEY}' setting in CKAN configuration."
+            )
 
     def get_oidc_user(self, userinfo: dict) -> model.User:
         """
@@ -291,6 +367,8 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             roles = token_service.get_user_roles(access_token)
         except Exception as e:
             log.warning("Failed to read Auth0 roles for '%s': %s", user.name, e)
+            tk.h.flash_error(AUTHORIZATION_ERROR_MESSAGE)
+            raise tk.NotAuthorized(AUTHORIZATION_ERROR_MESSAGE) from e
         else:
             log.debug("Auth0 roles for '%s': %s", user.name, roles)
             try:
@@ -334,7 +412,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
         session.pop(SESSION_CAME_FROM, None)
         session.pop(SESSION_STATE, None)
-        return tk.redirect_to("home.index")
+        return _redirect_to_denied_login_page()
 
     # IAuthenticator
 

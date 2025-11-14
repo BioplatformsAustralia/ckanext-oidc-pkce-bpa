@@ -61,6 +61,7 @@ def mock_config(monkeypatch):
         "ckanext.oidc_pkce_bpa.username_claim": "https://biocommons.org.au/username",
         "ckanext.oidc_pkce_bpa.register_redirect_url": "https://example.com/register",
         "ckanext.oidc_pkce_bpa.profile_redirect_url": "https://profiles.example.com/profile",
+        "ckanext.oidc_pkce_bpa.support_email": "support@example.com",
     }
 
     utils.get_auth0_settings.cache_clear()
@@ -68,6 +69,32 @@ def mock_config(monkeypatch):
     monkeypatch.setattr(tk, "config", fake_cfg, raising=False)
     yield fake_cfg
     utils.get_auth0_settings.cache_clear()
+
+
+def test_update_config_requires_support_email(monkeypatch, plugin):
+    """Plugin startup fails fast when the support email config is missing."""
+    monkeypatch.setattr(tk, "config", {}, raising=False)
+    monkeypatch.setattr(tk, "add_template_directory", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(tk.ValidationError, match=plugin_module.SUPPORT_EMAIL_CONFIG_KEY):
+        plugin.update_config({})
+
+
+def test_update_config_registers_templates(monkeypatch, plugin):
+    """Template directory registration still occurs when config is valid."""
+    fake_cfg = {plugin_module.SUPPORT_EMAIL_CONFIG_KEY: "help@example.com"}
+    monkeypatch.setattr(tk, "config", fake_cfg, raising=False)
+
+    captured = {}
+
+    def _fake_add_template_directory(cfg, directory):
+        captured["args"] = (cfg, directory)
+
+    monkeypatch.setattr(tk, "add_template_directory", _fake_add_template_directory)
+
+    plugin.update_config("config_object")
+
+    assert captured["args"] == ("config_object", "templates")
 
 
 @pytest.fixture
@@ -574,7 +601,7 @@ def test_oidc_login_response_passthrough_user(plugin):
     assert plugin.oidc_login_response(user) is None
 
 
-def test_oidc_login_response_redirects_home(plugin, monkeypatch):
+def test_oidc_login_response_redirects_to_denied_page(plugin, monkeypatch):
     """Unverified email keeps users on CKAN instead of re-triggering OIDC."""
     fake_session = {
         plugin_module.SESSION_CAME_FROM: "original",
@@ -589,7 +616,7 @@ def test_oidc_login_response_redirects_home(plugin, monkeypatch):
 
     result = plugin.oidc_login_response(response)
 
-    assert result == "/mock/home.index"
+    assert result == "/mock/oidc_pkce_bpa_public.login_error"
     assert plugin_module.SESSION_CAME_FROM not in fake_session
     assert plugin_module.SESSION_STATE not in fake_session
     assert plugin_module.SESSION_SKIP_OIDC not in fake_session
@@ -627,7 +654,7 @@ def test_callback_access_denied_redirects_home(monkeypatch):
     )
 
     assert response.status_code == 302
-    assert response.headers["Location"].endswith("/mock/home.index")
+    assert response.headers["Location"].endswith("/mock/oidc_pkce_bpa_public.login_error")
     assert messages[-1] == (
         "Your email address is not verified. Please check your inbox, confirm your "
         "email address and sign in again."
@@ -639,6 +666,122 @@ def test_callback_access_denied_redirects_home(monkeypatch):
         assert plugin_module.SESSION_VERIFIER not in sess
         assert sess[plugin_module.SESSION_FORCE_PROMPT] is True
         assert plugin_module.SESSION_SKIP_OIDC not in sess
+
+
+def test_callback_missing_required_role_shows_authorisation_error(monkeypatch):
+    """Missing required Auth0 roles surfaces a friendly authorisation message."""
+    messages = []
+    monkeypatch.setattr(
+        tk,
+        "h",
+        SimpleNamespace(flash_error=lambda msg: messages.append(msg)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tk,
+        "redirect_to",
+        lambda endpoint: redirect(f"/mock/{endpoint}"),
+    )
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    register_oidc_blueprint(app)
+
+    client = app.test_client()
+
+    with client.session_transaction() as sess:
+        sess[plugin_module.SESSION_CAME_FROM] = "original"
+        sess[plugin_module.SESSION_STATE] = "state"
+        sess[plugin_module.SESSION_VERIFIER] = "verifier"
+        sess[plugin_module.SESSION_FORCE_PROMPT] = True
+
+    response = client.get(
+        "/user/login/oidc-pkce/callback?error=missing_required_role&error_description="
+        "missing_required_role"
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/mock/oidc_pkce_bpa_public.login_error")
+
+
+def test_callback_error_uri_surfaces_help_link(monkeypatch, mock_config):
+    """When Auth0 supplies an error_uri we keep the user on CKAN with a link."""
+    monkeypatch.setattr(
+        tk,
+        "redirect_to",
+        lambda endpoint: redirect(f"/mock/{endpoint}"),
+    )
+    captured_render = {}
+
+    def _fake_render(template, extra_vars=None):
+        captured_render["template"] = template
+        captured_render["extra_vars"] = extra_vars or {}
+        return (
+            f"Rendered {template}: {captured_render['extra_vars'].get('error_description')} "
+            f"@ {captured_render['extra_vars'].get('error_uri')}"
+        )
+
+    monkeypatch.setattr(tk, "render", _fake_render, raising=False)
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    register_oidc_blueprint(app)
+
+    client = app.test_client()
+
+    with client.session_transaction() as sess:
+        sess[plugin_module.SESSION_CAME_FROM] = "original"
+        sess[plugin_module.SESSION_STATE] = "state"
+        sess[plugin_module.SESSION_VERIFIER] = "verifier"
+
+    response = client.get(
+        "/user/login/oidc-pkce/callback?error=invalid_request&error_description=Need%20approval"
+        "&error_uri=https%3A%2F%2Fstatus.example.com%2Ferrors%2Fneed-approval"
+    )
+
+    assert response.status_code == 200
+    assert captured_render["template"] == "oidc_pkce_bpa/login_error.html"
+    assert captured_render["extra_vars"]["error_description"] == "Need approval"
+    assert (
+        captured_render["extra_vars"]["error_uri"]
+        == "https://status.example.com/errors/need-approval"
+    )
+    body = response.data.decode("utf-8")
+    assert "Need approval" in body
+    assert "https://status.example.com/errors/need-approval" in body
+
+    with client.session_transaction() as sess:
+        assert plugin_module.SESSION_CAME_FROM not in sess
+        assert plugin_module.SESSION_STATE not in sess
+        assert plugin_module.SESSION_VERIFIER not in sess
+        assert plugin_module.SESSION_FORCE_PROMPT not in sess
+        assert plugin_module.SESSION_SKIP_OIDC not in sess
+
+
+def test_denied_redirect_endpoint_is_configurable(plugin, monkeypatch, mock_config):
+    """Operators can override the landing page shown after login denial."""
+    fake_session = {
+        plugin_module.SESSION_CAME_FROM: "/original",
+        plugin_module.SESSION_STATE: "state",
+    }
+    monkeypatch.setattr(plugin_module, "session", fake_session, raising=False)
+    mock_config["ckanext.oidc_pkce_bpa.denied_redirect_endpoint"] = "custom.endpoint"
+
+    captured = {}
+
+    def _fake_redirect(endpoint):
+        captured["endpoint"] = endpoint
+        return f"/mock/{endpoint}"
+
+    monkeypatch.setattr(tk, "redirect_to", _fake_redirect)
+
+    response = SimpleNamespace(status_code=302)
+    result = plugin.oidc_login_response(response)
+
+    assert result == "/mock/custom.endpoint"
+    assert captured["endpoint"] == "custom.endpoint"
+    assert plugin_module.SESSION_CAME_FROM not in fake_session
+    assert plugin_module.SESSION_STATE not in fake_session
 
 
 
