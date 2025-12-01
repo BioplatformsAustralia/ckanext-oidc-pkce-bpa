@@ -136,6 +136,18 @@ def flash_messages(monkeypatch):
     return messages
 
 
+def _expected_profile_sync_notice(*fields: str) -> str:
+    labels = [plugin_module.PROFILE_FIELD_LABELS.get(field, field) for field in fields]
+    if not labels:
+        formatted = ""
+    elif len(labels) == 1:
+        formatted = labels[0]
+    else:
+        formatted = ", ".join(labels[:-1]) + f" and {labels[-1]}"
+
+    return f"Your profile was updated to match your details in AAI profile: ({formatted})."
+
+
 def test_create_new_user(plugin, clean_session, mock_services):
     """A new CKAN user is created and synced with membership roles."""
     userinfo = {
@@ -223,7 +235,7 @@ def test_existing_user_update_fullname(plugin, clean_session, mock_services, fla
         context=mock_services.site_context,
     )
     assert flash_messages == [
-        ("notice", "Your CKAN profile was updated to match Auth0 (full name).")
+        ("notice", _expected_profile_sync_notice("fullname"))
     ]
 
 
@@ -252,7 +264,7 @@ def test_existing_user_updates_username_and_email(plugin, clean_session, mock_se
     assert updated_user.id == user.id
     assert updated_user.name == "updateduser"
     assert updated_user.email == "new-email@example.com"
-    assert model.Session.query(model.User).count() == 1
+    assert model.Session.query(model.User).filter_by(name="updateduser").count() == 1
     mock_services.token_service.get_user_roles.assert_called_once_with("token-999")
     mock_services.membership_service.apply_role_based_memberships.assert_called_once_with(
         user_name="updateduser",
@@ -260,7 +272,7 @@ def test_existing_user_updates_username_and_email(plugin, clean_session, mock_se
         context=mock_services.site_context,
     )
     assert flash_messages == [
-        ("notice", "Your CKAN profile was updated to match Auth0 (username and email address).")
+        ("notice", _expected_profile_sync_notice("username", "email"))
     ]
 
 
