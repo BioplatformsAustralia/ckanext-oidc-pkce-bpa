@@ -511,26 +511,26 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
         return updated_fields
 
-    def _update_username_if_needed(self, user: model.User, username: str) -> bool:
-        if user.name == username:
+    def _update_username_if_needed(self, user: model.User, new_username: str) -> bool:
+        if user.name == new_username:
             return False
 
-        existing_user = model.User.get(username)
-        if existing_user and existing_user.id != user.id:
+        conflicting_user = model.User.get(new_username)
+        if conflicting_user and conflicting_user.id != user.id:
             support_email = _get_support_email()
             log.error(
                 "Auth0 username '%s' for Auth0 user '%s' clashes with CKAN user '%s'",
-                username,
+                new_username,
                 user.id,
-                existing_user.id,
+                conflicting_user.id,
             )
             raise tk.ValidationError(
-                f"Unable to update your CKAN username to '{username}' because it is already taken. "
+                f"Unable to update your CKAN username to '{new_username}' because it is already taken. "
                 f"Please contact {support_email} for assistance."
             )
 
-        log.info("Updating username for Auth0 user '%s' from '%s' to '%s'", user.id, user.name, username)
-        user.name = username
+        log.info("Updating username for Auth0 user '%s' from '%s' to '%s'", user.id, user.name, new_username)
+        user.name = new_username
         return True
 
     def _update_fullname_if_needed(self, user: model.User, fullname: Optional[str]) -> bool:
