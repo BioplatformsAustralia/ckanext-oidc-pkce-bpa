@@ -120,6 +120,22 @@ def mock_services(monkeypatch, mock_config):
     )
 
 
+@pytest.fixture
+def flash_messages(monkeypatch):
+    """Capture flash messages without requiring a real session."""
+    messages = []
+    monkeypatch.setattr(
+        tk,
+        "h",
+        SimpleNamespace(
+            flash_notice=lambda msg, allow_html=False: messages.append(("notice", msg)),
+            flash_error=lambda msg, allow_html=False: messages.append(("error", msg)),
+        ),
+        raising=False,
+    )
+    return messages
+
+
 def test_create_new_user(plugin, clean_session, mock_services):
     """A new CKAN user is created and synced with membership roles."""
     userinfo = {
@@ -177,7 +193,7 @@ def test_existing_user_backfill_auth0(plugin, clean_session, mock_services):
     )
 
 
-def test_existing_user_update_fullname(plugin, clean_session, mock_services):
+def test_existing_user_update_fullname(plugin, clean_session, mock_services, flash_messages):
     """Full name changes from Auth0 propagate to existing CKAN users."""
     user = model.User(
         name="fullnameuser",
@@ -206,6 +222,81 @@ def test_existing_user_update_fullname(plugin, clean_session, mock_services):
         roles=["tsi-member"],
         context=mock_services.site_context,
     )
+    assert flash_messages == [
+        ("notice", "Your CKAN profile was updated to match Auth0 (full name).")
+    ]
+
+
+def test_existing_user_updates_username_and_email(plugin, clean_session, mock_services, flash_messages):
+    """Username and email changes from Auth0 are synced for existing users."""
+    user = model.User(
+        name="legacyuser",
+        email="old-email@example.com",
+        fullname="Existing User",
+        password="",
+    )
+    user.plugin_extras = {"oidc_pkce": {"auth0_id": "auth0|999"}}
+    model.Session.add(user)
+    model.Session.commit()
+
+    userinfo = {
+        "sub": "auth0|999",
+        "email": "new-email@example.com",
+        "name": "Existing User",
+        "https://biocommons.org.au/username": "updateduser",
+        "access_token": "token-999",
+    }
+
+    updated_user = plugin.get_oidc_user(userinfo)
+
+    assert updated_user.id == user.id
+    assert updated_user.name == "updateduser"
+    assert updated_user.email == "new-email@example.com"
+    assert model.Session.query(model.User).count() == 1
+    mock_services.token_service.get_user_roles.assert_called_once_with("token-999")
+    mock_services.membership_service.apply_role_based_memberships.assert_called_once_with(
+        user_name="updateduser",
+        roles=["tsi-member"],
+        context=mock_services.site_context,
+    )
+    assert flash_messages == [
+        ("notice", "Your CKAN profile was updated to match Auth0 (username and email address).")
+    ]
+
+
+def test_conflicting_username_triggers_error(plugin, clean_session, mock_services):
+    """Renaming to a username that already exists is blocked."""
+    existing_user = model.User(
+        name="takenuser",
+        email="taken@example.com",
+        fullname="Taken User",
+        password="",
+    )
+    model.Session.add(existing_user)
+
+    auth0_user = model.User(
+        name="legacy-name",
+        email="legacy@example.com",
+        fullname="Legacy User",
+        password="",
+    )
+    auth0_user.plugin_extras = {"oidc_pkce": {"auth0_id": "auth0|conflict"}}
+    model.Session.add(auth0_user)
+    model.Session.commit()
+
+    userinfo = {
+        "sub": "auth0|conflict",
+        "email": "legacy@example.com",
+        "name": "Legacy User",
+        "https://biocommons.org.au/username": "takenuser",
+        "access_token": "token-conflict",
+    }
+
+    with pytest.raises(tk.ValidationError, match="already taken"):
+        plugin.get_oidc_user(userinfo)
+
+    mock_services.token_service.get_user_roles.assert_not_called()
+    mock_services.membership_service.apply_role_based_memberships.assert_not_called()
 
 
 def test_missing_sub_raises(plugin):
