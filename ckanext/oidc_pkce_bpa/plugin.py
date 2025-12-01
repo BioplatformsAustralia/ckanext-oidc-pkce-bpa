@@ -1,7 +1,7 @@
 from flask import Blueprint, current_app, redirect, request
 import logging
 import uuid
-from typing import Optional
+from typing import List, Optional
 from urllib.parse import urlencode
 
 from . import utils
@@ -34,6 +34,11 @@ _ORIGINAL_OIDC_LOGIN = None
 _ORIGINAL_FORCE_LOGIN = None
 SESSION_ADMIN_LOGIN_TOKEN = "ckanext:oidc_pkce_bpa:admin_login_token"
 SESSION_ADMIN_LOGIN_TARGET = "ckanext:oidc_pkce_bpa:admin_login_target"
+PROFILE_FIELD_LABELS = {
+    "username": "username",
+    "email": "email address",
+    "fullname": "full name",
+}
 
 
 def _get_denied_redirect_endpoint():
@@ -351,9 +356,19 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             raise tk.NotAuthorized("'userinfo' missing 'sub' claim during get_oidc_user().")
 
         username = utils.extract_username(userinfo)
-        user = model.User.get(username) or self._create_new_user(userinfo, username)
+        user = self._find_user_by_auth0_id(sub) or model.User.get(username)
+        if not user:
+            user = self._create_new_user(userinfo, username)
+
         self._ensure_auth0_id(user, sub)
-        self._update_fullname_if_needed(user, userinfo)
+        updated_fields = self._sync_user_profile(
+            user,
+            username=username,
+            email=userinfo.get("email"),
+            fullname=userinfo.get("name"),
+        )
+        if updated_fields:
+            self._flash_profile_sync_notice(updated_fields)
 
         access_token = userinfo.get("access_token")
         if not access_token:
@@ -464,8 +479,76 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             extras["oidc_pkce"]["auth0_id"] = sub
             log.info("Backfilled Auth0 ID for user '%s': %s", user.name, sub)
 
-    def _update_fullname_if_needed(self, user: model.User, userinfo: dict):
-        updated_fullname = userinfo.get("name")
-        if updated_fullname and user.fullname != updated_fullname:
-            log.info("Updating fullname for '%s' to '%s'", user.name, updated_fullname)
-            user.fullname = updated_fullname
+    def _find_user_by_auth0_id(self, auth0_id: str) -> Optional[model.User]:
+        if not auth0_id:
+            return None
+
+        query = model.Session.query(model.User).filter(
+            model.User.plugin_extras.contains({"oidc_pkce": {"auth0_id": auth0_id}})
+        )
+        return query.first()
+
+    def _sync_user_profile(
+        self,
+        user: model.User,
+        *,
+        username: Optional[str],
+        email: Optional[str],
+        fullname: Optional[str],
+    ) -> List[str]:
+        updated_fields: List[str] = []
+
+        if username and self._update_username_if_needed(user, username):
+            updated_fields.append("username")
+
+        if email and user.email != email:
+            log.info("Updating email for '%s' to '%s'", user.name, email)
+            user.email = email
+            updated_fields.append("email")
+
+        if self._update_fullname_if_needed(user, fullname):
+            updated_fields.append("fullname")
+
+        return updated_fields
+
+    def _update_username_if_needed(self, user: model.User, new_username: str) -> bool:
+        if user.name == new_username:
+            return False
+
+        conflicting_user = model.User.get(new_username)
+        if conflicting_user and conflicting_user.id != user.id:
+            support_email = _get_support_email()
+            log.error(
+                "Auth0 username '%s' for Auth0 user '%s' clashes with CKAN user '%s'",
+                new_username,
+                user.id,
+                conflicting_user.id,
+            )
+            raise tk.ValidationError(
+                f"Unable to update your CKAN username to '{new_username}' because it is already taken. "
+                f"Please contact {support_email} for assistance."
+            )
+
+        log.info("Updating username for Auth0 user '%s' from '%s' to '%s'", user.id, user.name, new_username)
+        user.name = new_username
+        return True
+
+    def _update_fullname_if_needed(self, user: model.User, fullname: Optional[str]) -> bool:
+        if fullname and user.fullname != fullname:
+            log.info("Updating fullname for '%s' to '%s'", user.name, fullname)
+            user.fullname = fullname
+            return True
+        return False
+
+    def _flash_profile_sync_notice(self, fields: List[str]):
+        if not fields:
+            return
+
+        labels = [PROFILE_FIELD_LABELS.get(field, field) for field in fields]
+        if len(labels) == 1:
+            formatted = labels[0]
+        else:
+            formatted = ", ".join(labels[:-1]) + f" and {labels[-1]}"
+
+        message = f"Your profile was updated to match your details in AAI profile: ({formatted})."
+        tk.h.flash_notice(message)
