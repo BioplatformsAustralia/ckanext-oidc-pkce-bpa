@@ -265,23 +265,25 @@ def admin_login_complete():
 
 @public_bp.route("/user/register")
 def force_oidc_register():
-    # hard-redirect to AAI portal user registration page
+    """Render the legacy CKAN registration form when available."""
+    legacy_register_view = current_app.view_functions.get("user.register")
+    if legacy_register_view:
+        return legacy_register_view()
+
+    log.warning("Legacy register view not found; falling back to external registration.")
     return redirect(utils.get_redirect_registration_url())
 
 
 @public_bp.route("/user/login")
 def force_oidc_login():
-    admin_token = request.args.get("admin_token")
-    session_token = session.get(SESSION_ADMIN_LOGIN_TOKEN)
-    if admin_token and session_token and admin_token == session_token:
-        legacy_login_view = current_app.view_functions.get("user.login")
-        if legacy_login_view:
-            return legacy_login_view()
-        log.warning("Legacy login view not found; falling back to OIDC login.")
-
     prompt_login = session.pop(SESSION_FORCE_PROMPT, False)
 
-    # redirect into OIDC login route inside CKAN
+    legacy_login_view = current_app.view_functions.get("user.login")
+    if legacy_login_view:
+        return legacy_login_view()
+
+    log.warning("Legacy login view not found; falling back to OIDC login.")
+
     if prompt_login:
         return _build_oidc_login_response(prompt="login")
 
@@ -436,12 +438,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         if tk.request.path != login_path:
             return None
 
-        admin_token = tk.request.args.get("admin_token")
-        session_token = session.get(SESSION_ADMIN_LOGIN_TOKEN)
-        if admin_token and session_token and admin_token == session_token:
-            return None
-
-        return tk.redirect_to("oidc_pkce.force_oidc_login")
+        return None
 
     def logout(self):
         session.pop(SESSION_ADMIN_LOGIN_TOKEN, None)
