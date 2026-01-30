@@ -62,6 +62,7 @@ def mock_config(monkeypatch):
         "ckanext.oidc_pkce_bpa.register_redirect_url": "https://example.com/register",
         "ckanext.oidc_pkce_bpa.profile_redirect_url": "https://profiles.example.com/profile",
         "ckanext.oidc_pkce_bpa.support_email": "support@example.com",
+        "ckan.site_url": "https://ckan.example.com",
     }
 
     utils.get_auth0_settings.cache_clear()
@@ -694,10 +695,94 @@ def test_authenticator_logout_clears_tokens(monkeypatch, plugin):
         },
         raising=False,
     )
+    monkeypatch.setattr(plugin_module, "_get_current_user_obj", lambda: None, raising=False)
     plugin.logout()
     assert plugin_module.SESSION_ADMIN_LOGIN_TOKEN not in plugin_module.session
     assert plugin_module.SESSION_ADMIN_LOGIN_TARGET not in plugin_module.session
 
+
+def test_authenticator_logout_redirects_to_auth0(monkeypatch, plugin, mock_config):
+    """Auth0-backed users are sent through the Auth0 logout endpoint."""
+    app = Flask(__name__)
+    app.secret_key = "testing"
+
+    user = SimpleNamespace(
+        name="tester",
+        is_authenticated=True,
+        plugin_extras={"oidc_pkce": {"auth0_id": "auth0|123"}},
+    )
+    monkeypatch.setattr(plugin_module, "_get_current_user_obj", lambda: user, raising=False)
+    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
+    logout_target = "/_logout_handler?came_from=/user/logged_out_page"
+    monkeypatch.setattr(
+        plugin_module.user_view,
+        "logout",
+        lambda: SimpleNamespace(location=logout_target),
+        raising=False,
+    )
+    monkeypatch.setattr(plugin_module.oidc_config, "client_id", lambda: "client-123", raising=False)
+
+    with app.test_request_context("/user/logout"):
+        response = plugin.logout()
+
+    assert response.status_code == 302
+    parsed = urlparse(response.headers["Location"])
+    assert parsed.netloc == "auth0.example.com"
+    assert parsed.path == "/v2/logout"
+    params = parse_qs(parsed.query)
+    assert params["client_id"] == ["client-123"]
+    assert params["returnTo"] == ["https://ckan.example.com/_logout_handler?came_from=/user/logged_out_page"]
+
+
+def test_authenticator_logout_skips_for_local_users(monkeypatch, plugin):
+    """Users without Auth0 identities use the regular CKAN logout."""
+    user = SimpleNamespace(
+        name="local",
+        is_authenticated=True,
+        plugin_extras={},
+    )
+    monkeypatch.setattr(plugin_module, "_get_current_user_obj", lambda: user, raising=False)
+    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
+
+    def fail_logout():
+        raise AssertionError("CKAN logout should not be called for local-only users")
+
+    monkeypatch.setattr(plugin_module.user_view, "logout", fail_logout, raising=False)
+
+    assert plugin.logout() is None
+
+
+def test_authenticator_logout_falls_back_when_missing_location(monkeypatch, plugin):
+    """If CKAN logout response lacks a redirect target we return it unchanged."""
+    user = SimpleNamespace(
+        name="tester",
+        is_authenticated=True,
+        plugin_extras={"oidc_pkce": {"auth0_id": "auth0|xyz"}},
+    )
+    monkeypatch.setattr(plugin_module, "_get_current_user_obj", lambda: user, raising=False)
+    monkeypatch.setattr(plugin_module, "session", {}, raising=False)
+
+    sentinel = SimpleNamespace(location=None)
+    monkeypatch.setattr(plugin_module.user_view, "logout", lambda: sentinel, raising=False)
+
+    app = Flask(__name__)
+    app.secret_key = "testing"
+    with app.test_request_context("/user/logout"):
+        assert plugin.logout() is sentinel
+
+
+def test_ensure_absolute_url_builds_from_site_url(monkeypatch):
+    """Relative return paths are expanded using ckan.site_url."""
+    monkeypatch.setattr(plugin_module.tk, "config", {"ckan.site_url": "https://ckan.example.com"}, raising=False)
+    result = plugin_module._ensure_absolute_url("/user/logged_out_page")
+    assert result == "https://ckan.example.com/user/logged_out_page"
+
+
+def test_ensure_absolute_url_requires_site_url(monkeypatch):
+    """Missing ckan.site_url raises a validation error."""
+    monkeypatch.setattr(plugin_module.tk, "config", {}, raising=False)
+    with pytest.raises(tk.ValidationError):
+        plugin_module._ensure_absolute_url("/user/logged_out_page")
 def test_oidc_login_response_passthrough_user(plugin):
     """When CKAN user sync succeeds we allow the default flow to continue."""
     user = model.User(name="passthrough", password="dummy")

@@ -2,7 +2,7 @@ from flask import Blueprint, current_app, redirect, request
 import logging
 import uuid
 from typing import List, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from . import utils
 
@@ -12,6 +12,7 @@ from ckanext.oidc_pkce import views as oidc_views
 
 from ckan import authz, model
 from ckan.common import g, session
+from ckan.views import user as user_view
 from ckan.plugins import SingletonPlugin, implements
 from ckan.plugins.interfaces import IBlueprint, IAuthenticator, IConfigurer
 import ckan.plugins.toolkit as tk
@@ -29,6 +30,7 @@ SESSION_VERIFIER = oidc_views.SESSION_VERIFIER
 # extension no longer honours this flag when routing logins.
 SESSION_SKIP_OIDC = "ckanext:oidc_pkce_bpa:skip_oidc_login"
 SESSION_FORCE_PROMPT = "ckanext:oidc_pkce_bpa:force_prompt_login"
+SESSION_AUTH0_LOGOUT = "ckanext:oidc_pkce_bpa:auth0_logout_in_progress"
 _ORIGINAL_OIDC_CALLBACK = oidc_views.callback
 _ORIGINAL_OIDC_LOGIN = None
 _ORIGINAL_FORCE_LOGIN = None
@@ -39,6 +41,62 @@ PROFILE_FIELD_LABELS = {
     "email": "email address",
     "fullname": "full name",
 }
+
+try:
+    from ckan.common import current_user as flask_current_user
+except ImportError:  # CKAN < 2.10
+    flask_current_user = None
+
+
+def _get_current_user_obj():
+    if flask_current_user is not None:
+        return flask_current_user
+    return getattr(g, "userobj", None)
+
+
+def _user_has_auth0_identity(user: Optional[model.User]) -> bool:
+    if not user:
+        return False
+    plugin_extras = getattr(user, "plugin_extras", None) or {}
+    oidc_data = plugin_extras.get("oidc_pkce") or {}
+    return bool(oidc_data.get("auth0_id"))
+
+
+def _ensure_absolute_url(url: Optional[str]) -> str:
+    if not url:
+        return tk.url_for("user.logged_out_page", qualified=True)
+
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.netloc:
+        return url
+
+    site_url = tk.config.get("ckan.site_url")
+    if not site_url:
+        raise tk.ValidationError("Missing 'ckan.site_url' configuration.")
+    site_url = site_url.rstrip("/")
+    if not url.startswith("/"):
+        url = f"/{url}"
+    return f"{site_url}{url}"
+
+
+def _build_auth0_logout_url(*, return_to: str) -> Optional[str]:
+    try:
+        settings = utils.get_auth0_settings()
+    except tk.NotAuthorized as exc:
+        log.warning("Auth0 logout skipped; Auth0 settings unavailable: %s", exc)
+        return None
+
+    domain = settings.auth0_domain.strip().rstrip("/") if settings.auth0_domain else ""
+    if not domain:
+        log.warning("Auth0 logout skipped; auth0_domain is not configured")
+        return None
+
+    base = f"https://{domain}/v2/logout"
+    params = {
+        "client_id": oidc_config.client_id(),
+        "returnTo": return_to,
+    }
+    return f"{base}?{urlencode(params)}"
 
 
 def _get_denied_redirect_endpoint():
@@ -446,7 +504,42 @@ class OidcPkceBpaPlugin(SingletonPlugin):
     def logout(self):
         session.pop(SESSION_ADMIN_LOGIN_TOKEN, None)
         session.pop(SESSION_ADMIN_LOGIN_TARGET, None)
-        return None
+        if session.pop(SESSION_AUTH0_LOGOUT, False):
+            log.debug("Detected in-progress Auth0 logout; allowing CKAN logout to continue.")
+            return None
+
+        current_user = _get_current_user_obj()
+        if not current_user or not getattr(current_user, "is_authenticated", False):
+            return None
+
+        if not _user_has_auth0_identity(current_user):
+            log.debug("User '%s' missing Auth0 identity; skipping Auth0 logout.", getattr(current_user, "name", "unknown"))
+            return None
+
+        session[SESSION_AUTH0_LOGOUT] = True
+        try:
+            ck_logout_response = user_view.logout()
+        finally:
+            # Ensure the in-progress flag is cleared if inner logout short-circuits.
+            session.pop(SESSION_AUTH0_LOGOUT, None)
+
+        if not ck_logout_response or not getattr(ck_logout_response, "location", None):
+            log.warning("Auth0 logout aborted; CKAN logout response missing redirect target.")
+            return ck_logout_response
+
+        try:
+            return_to = _ensure_absolute_url(ck_logout_response.location)
+        except tk.ValidationError as exc:
+            log.warning("Auth0 logout aborted; unable to determine return URL: %s", exc)
+            return ck_logout_response
+
+        auth0_logout_url = _build_auth0_logout_url(return_to=return_to)
+        if not auth0_logout_url:
+            log.info("Auth0 logout URL not available; returning CKAN logout response.")
+            return ck_logout_response
+
+        log.info("Redirecting '%s' to Auth0 logout.", getattr(current_user, "name", "unknown"))
+        return redirect(auth0_logout_url)
 
     # IBlueprint
 
