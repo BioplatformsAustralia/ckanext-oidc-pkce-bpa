@@ -41,6 +41,10 @@ PROFILE_FIELD_LABELS = {
     "email": "email address",
     "fullname": "full name",
 }
+EMAIL_MISMATCH_ERROR_MESSAGE = (
+    "There is an email mismatch error with your account, please contact "
+    "help@bioplatforms.org and include your name username and email."
+)
 
 try:
     from ckan.common import current_user as flask_current_user
@@ -169,7 +173,19 @@ def _oidc_callback_with_email_check(*args, **kwargs):
             },
         )
 
-    return _ORIGINAL_OIDC_CALLBACK(*args, **kwargs)
+    try:
+        return _ORIGINAL_OIDC_CALLBACK(*args, **kwargs)
+    except tk.ValidationError as exc:
+        error_dict = getattr(exc, "error_dict", {}) or {}
+        message = error_dict.get("message") if isinstance(error_dict, dict) else None
+        if isinstance(message, (list, tuple)):
+            message = ", ".join(str(item) for item in message if item)
+        if not isinstance(message, str) or not message.strip():
+            message = str(exc) or AUTHORIZATION_ERROR_MESSAGE
+        log.warning("OIDC callback raised ValidationError: %s", message)
+        tk.h.flash_error(message)
+        _clear_denied_login_session(force_prompt=False)
+        return _redirect_to_denied_login_page()
 
 
 def _register_callback_override(state):
@@ -414,7 +430,12 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             raise tk.NotAuthorized("'userinfo' missing 'sub' claim during get_oidc_user().")
 
         username = utils.extract_username(userinfo)
+        email = userinfo.get("email")
         user = self._find_user_by_auth0_id(sub) or model.User.get(username)
+        if user:
+            self._enforce_email_not_claimed_by_other_user(user, email)
+        elif email:
+            self._assert_email_not_taken(auth0_email=email, requested_username=username)
         if not user:
             user = self._create_new_user(userinfo, username)
 
@@ -422,7 +443,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         updated_fields = self._sync_user_profile(
             user,
             username=username,
-            email=userinfo.get("email"),
+            email=email,
             fullname=userinfo.get("name"),
         )
         if updated_fields:
@@ -632,6 +653,49 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             user.fullname = fullname
             return True
         return False
+
+    def _enforce_email_not_claimed_by_other_user(self, user: model.User, auth0_email: Optional[str]) -> None:
+        if not auth0_email:
+            return
+
+        ckan_email = user.email
+        if not ckan_email or ckan_email == auth0_email:
+            return
+
+        conflicting_users = model.User.by_email(auth0_email)
+        for conflicting_user in conflicting_users:
+            if conflicting_user.id == user.id:
+                continue
+
+            log.warning(
+                "Email mismatch for username '%s': Auth0 email '%s' differs from CKAN email '%s'. "
+                "Auth0 email already used by username '%s'.",
+                user.name,
+                auth0_email,
+                ckan_email,
+                conflicting_user.name,
+            )
+            raise tk.ValidationError(EMAIL_MISMATCH_ERROR_MESSAGE)
+
+    def _assert_email_not_taken(self, *, auth0_email: Optional[str], requested_username: str) -> None:
+        if not auth0_email:
+            return
+
+        conflicting_user = (
+            model.Session.query(model.User)
+            .filter(model.User.email == auth0_email)
+            .first()
+        )
+        if not conflicting_user:
+            return
+
+        log.warning(
+            "Cannot create username '%s': Auth0 email '%s' already belongs to CKAN username '%s'.",
+            requested_username,
+            auth0_email,
+            conflicting_user.name,
+        )
+        raise tk.ValidationError(EMAIL_MISMATCH_ERROR_MESSAGE)
 
     def _flash_profile_sync_notice(self, fields: List[str]):
         if not fields:

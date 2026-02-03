@@ -277,6 +277,67 @@ def test_existing_user_updates_username_and_email(plugin, clean_session, mock_se
     ]
 
 
+def test_email_conflict_with_other_user_triggers_error(plugin, clean_session, mock_services):
+    """Email mismatches that collide with another username are blocked."""
+    conflicting_user = model.User(
+        name="otheruser",
+        email="shared@example.com",
+        fullname="Other User",
+        password="",
+    )
+    model.Session.add(conflicting_user)
+
+    user = model.User(
+        name="legacyuser",
+        email="old-email@example.com",
+        fullname="Legacy User",
+        password="",
+    )
+    user.plugin_extras = {"oidc_pkce": {"auth0_id": "auth0|999"}}
+    model.Session.add(user)
+    model.Session.commit()
+
+    userinfo = {
+        "sub": "auth0|999",
+        "email": "shared@example.com",
+        "name": "Legacy User",
+        "https://biocommons.org.au/username": "legacyuser",
+        "access_token": "token-999",
+    }
+
+    with pytest.raises(tk.ValidationError, match="email mismatch error"):
+        plugin.get_oidc_user(userinfo)
+
+    mock_services.token_service.get_user_roles.assert_not_called()
+    mock_services.membership_service.apply_role_based_memberships.assert_not_called()
+
+
+def test_new_user_creation_blocked_when_email_taken(plugin, clean_session, mock_services):
+    """Creating a new CKAN user fails if the Auth0 email is already in use."""
+    conflicting_user = model.User(
+        name="amanda-red-2",
+        email="amanda+red@biocommons.org.au",
+        fullname="Amanda Red 2",
+        password="",
+    )
+    model.Session.add(conflicting_user)
+    model.Session.commit()
+
+    userinfo = {
+        "sub": "auth0|new",
+        "email": "amanda+red@biocommons.org.au",
+        "name": "Amanda Red 1",
+        "https://biocommons.org.au/username": "amanda-red-1",
+        "access_token": "token-new",
+    }
+
+    with pytest.raises(tk.ValidationError, match="email mismatch error"):
+        plugin.get_oidc_user(userinfo)
+
+    mock_services.token_service.get_user_roles.assert_not_called()
+    mock_services.membership_service.apply_role_based_memberships.assert_not_called()
+
+
 def test_conflicting_username_triggers_error(plugin, clean_session, mock_services):
     """Renaming to a username that already exists is blocked."""
     existing_user = model.User(
