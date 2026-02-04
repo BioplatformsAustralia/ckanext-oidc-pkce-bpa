@@ -433,6 +433,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         email = userinfo.get("email")
         user = self._find_user_by_auth0_id(sub)
         if user:
+            # ensure that no other email or username is used for this Auth0 ID user
             self._enforce_username_not_claimed_by_other_user(user, username)
             self._enforce_email_not_claimed_by_other_user(user, email)
         else:

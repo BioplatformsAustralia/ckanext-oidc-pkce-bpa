@@ -280,7 +280,7 @@ def test_existing_user_updates_username_and_email(plugin, clean_session, mock_se
 def test_email_conflict_with_other_user_triggers_error(plugin, clean_session, mock_services):
     """Email mismatches that collide with another username are blocked."""
     conflicting_user = model.User(
-        name="otheruser",
+        name="otheruser_email_conflict_1",
         email="shared@example.com",
         fullname="Other User",
         password="",
@@ -315,7 +315,7 @@ def test_email_conflict_with_other_user_triggers_error(plugin, clean_session, mo
 def test_existing_auth0_user_conflict_same_email_raises(plugin, clean_session, mock_services):
     """Existing Auth0-linked users error if another CKAN user shares their email."""
     conflicting_user = model.User(
-        name="otheruser",
+        name="otheruser_email_conflict_2",
         email="shared@example.com",
         fullname="Other User",
         password="",
@@ -401,7 +401,7 @@ def test_conflicting_username_triggers_error(plugin, clean_session, mock_service
         "access_token": "token-conflict",
     }
 
-    with pytest.raises(tk.ValidationError, match="already taken"):
+    with pytest.raises(tk.ValidationError, match="email mismatch error"):
         plugin.get_oidc_user(userinfo)
 
     mock_services.token_service.get_user_roles.assert_not_called()
