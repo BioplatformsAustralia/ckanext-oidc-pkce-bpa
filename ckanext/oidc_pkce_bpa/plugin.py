@@ -431,11 +431,16 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
         username = utils.extract_username(userinfo)
         email = userinfo.get("email")
-        user = self._find_user_by_auth0_id(sub) or model.User.get(username)
+        user = self._find_user_by_auth0_id(sub)
         if user:
+            self._enforce_username_not_claimed_by_other_user(user, username)
             self._enforce_email_not_claimed_by_other_user(user, email)
-        elif email:
-            self._assert_email_not_taken(auth0_email=email, requested_username=username)
+        else:
+            user = model.User.get(username)
+            if user:
+                self._enforce_email_not_claimed_by_other_user(user, email)
+            elif email:
+                self._assert_email_not_taken(auth0_email=email, requested_username=username)
         if not user:
             user = self._create_new_user(userinfo, username)
 
@@ -658,21 +663,33 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         if not auth0_email:
             return
 
-        ckan_email = user.email
-        if not ckan_email or ckan_email == auth0_email:
+        conflicting_user = (
+            model.Session.query(model.User)
+            .filter(model.User.email == auth0_email, model.User.id != user.id)
+            .first()
+        )
+        if not conflicting_user:
             return
 
-        conflicting_users = model.User.by_email(auth0_email)
-        for conflicting_user in conflicting_users:
-            if conflicting_user.id == user.id:
-                continue
+        log.warning(
+            "Email mismatch for username '%s': Auth0 email '%s' conflicts with CKAN username '%s' (current CKAN email '%s').",
+            user.name,
+            auth0_email,
+            conflicting_user.name,
+            user.email,
+        )
+        raise tk.ValidationError(EMAIL_MISMATCH_ERROR_MESSAGE)
 
+    def _enforce_username_not_claimed_by_other_user(self, user: model.User, auth0_username: Optional[str]) -> None:
+        if not auth0_username:
+            return
+
+        conflicting_user = model.User.get(auth0_username)
+        if conflicting_user and conflicting_user.id != user.id:
             log.warning(
-                "Email mismatch for username '%s': Auth0 email '%s' differs from CKAN email '%s'. "
-                "Auth0 email already used by username '%s'.",
-                user.name,
-                auth0_email,
-                ckan_email,
+                "Username mismatch for Auth0 user '%s': desired username '%s' is already taken by CKAN username '%s'.",
+                user.id,
+                auth0_username,
                 conflicting_user.name,
             )
             raise tk.ValidationError(EMAIL_MISMATCH_ERROR_MESSAGE)

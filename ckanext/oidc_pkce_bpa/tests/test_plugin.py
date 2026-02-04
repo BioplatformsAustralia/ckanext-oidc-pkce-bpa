@@ -312,6 +312,41 @@ def test_email_conflict_with_other_user_triggers_error(plugin, clean_session, mo
     mock_services.membership_service.apply_role_based_memberships.assert_not_called()
 
 
+def test_existing_auth0_user_conflict_same_email_raises(plugin, clean_session, mock_services):
+    """Existing Auth0-linked users error if another CKAN user shares their email."""
+    conflicting_user = model.User(
+        name="otheruser",
+        email="shared@example.com",
+        fullname="Other User",
+        password="",
+    )
+    model.Session.add(conflicting_user)
+
+    auth0_user = model.User(
+        name="legacyuser",
+        email="shared@example.com",
+        fullname="Legacy User",
+        password="",
+    )
+    auth0_user.plugin_extras = {"oidc_pkce": {"auth0_id": "auth0|shared"}}
+    model.Session.add(auth0_user)
+    model.Session.commit()
+
+    userinfo = {
+        "sub": "auth0|shared",
+        "email": "shared@example.com",
+        "name": "Legacy User",
+        "https://biocommons.org.au/username": "legacyuser",
+        "access_token": "token-shared",
+    }
+
+    with pytest.raises(tk.ValidationError, match="email mismatch error"):
+        plugin.get_oidc_user(userinfo)
+
+    mock_services.token_service.get_user_roles.assert_not_called()
+    mock_services.membership_service.apply_role_based_memberships.assert_not_called()
+
+
 def test_new_user_creation_blocked_when_email_taken(plugin, clean_session, mock_services):
     """Creating a new CKAN user fails if the Auth0 email is already in use."""
     conflicting_user = model.User(
