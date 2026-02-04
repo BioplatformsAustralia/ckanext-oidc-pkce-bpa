@@ -324,7 +324,7 @@ def test_existing_auth0_user_conflict_same_email_raises(plugin, clean_session, m
 
     auth0_user = model.User(
         name="legacyuser",
-        email="shared@example.com",
+        email="legacy@example.com",
         fullname="Legacy User",
         password="",
     )
