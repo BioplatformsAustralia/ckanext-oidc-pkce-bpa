@@ -12,10 +12,10 @@ from ckanext.oidc_pkce import views as oidc_views
 
 from ckan import authz, model
 from ckan.common import g, session
-from ckan.views import user as user_view
 from ckan.plugins import SingletonPlugin, implements
 from ckan.plugins.interfaces import IBlueprint, IAuthenticator, IConfigurer
 import ckan.plugins.toolkit as tk
+from sqlalchemy import func
 
 from ckanext.oidc_pkce.interfaces import IOidcPkce
 
@@ -45,6 +45,12 @@ EMAIL_MISMATCH_ERROR_MESSAGE = (
     "There is an email mismatch error with your account, please contact "
     "help@bioplatforms.org and include your name username and email."
 )
+
+def _normalise_email(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    normalised = value.strip().lower()
+    return normalised or None
 
 try:
     from ckan.common import current_user as flask_current_user
@@ -431,15 +437,17 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
         username = utils.extract_username(userinfo)
         email = userinfo.get("email")
-        user = self._find_user_by_auth0_id(sub)
-        if user:
+        user_auth0id_match = self._find_user_by_auth0_id(sub)
+        if user_auth0id_match:
             # ensure that no other email or username is used for this Auth0 ID user
-            self._enforce_username_not_claimed_by_other_user(user, username)
-            self._enforce_email_not_claimed_by_other_user(user, email)
+            self._enforce_username_not_claimed_by_other_user(user_auth0id_match, username)
+            self._enforce_email_not_claimed_by_other_user(user_auth0id_match, email)
         else:
-            user = model.User.get(username)
-            if user:
-                self._enforce_email_not_claimed_by_other_user(user, email)
+            user_username_match = model.User.get(username)
+            if user_username_match:
+                self._enforce_username_email_alignment(user=user_username_match, auth0_email=email)
+                self._enforce_email_not_claimed_by_other_user(user_username_match, email)
+                user = user_username_match
             elif email:
                 self._assert_email_not_taken(auth0_email=email, requested_username=username)
         if not user:
@@ -661,12 +669,14 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         return False
 
     def _enforce_email_not_claimed_by_other_user(self, user: model.User, auth0_email: Optional[str]) -> None:
-        if not auth0_email:
+        normalised_email = _normalise_email(auth0_email)
+        if not normalised_email:
             return
 
         conflicting_user = (
             model.Session.query(model.User)
-            .filter(model.User.email == auth0_email, model.User.id != user.id)
+            .filter(func.lower(model.User.email) == normalised_email, model.User.id != user.id)
+            .filter(model.User.state != "deleted")
             .first()
         )
         if not conflicting_user:
@@ -675,11 +685,26 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         log.warning(
             "Email mismatch for username '%s': Auth0 email '%s' conflicts with CKAN username '%s' (current CKAN email '%s').",
             user.name,
-            auth0_email,
+            normalised_email,
             conflicting_user.name,
             user.email,
         )
         raise tk.ValidationError(EMAIL_MISMATCH_ERROR_MESSAGE)
+
+    def _enforce_username_email_alignment(self, *, user: model.User, auth0_email: Optional[str]) -> None:
+        normalised_email = _normalise_email(auth0_email)
+        if not normalised_email:
+            return
+
+        ckan_email = _normalise_email(user.email)
+        if ckan_email and ckan_email != normalised_email:
+            log.warning(
+                "Username '%s' already exists in CKAN with email '%s', which mismatches Auth0 email '%s' for unlinked Auth0 ID.",
+                user.name,
+                ckan_email,
+                normalised_email,
+            )
+            raise tk.ValidationError(EMAIL_MISMATCH_ERROR_MESSAGE)
 
     def _enforce_username_not_claimed_by_other_user(self, user: model.User, auth0_username: Optional[str]) -> None:
         if not auth0_username:
@@ -696,12 +721,14 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             raise tk.ValidationError(EMAIL_MISMATCH_ERROR_MESSAGE)
 
     def _assert_email_not_taken(self, *, auth0_email: Optional[str], requested_username: str) -> None:
-        if not auth0_email:
+        normalised_email = _normalise_email(auth0_email)
+        if not normalised_email:
             return
 
         conflicting_user = (
             model.Session.query(model.User)
-            .filter(model.User.email == auth0_email)
+            .filter(func.lower(model.User.email) == normalised_email)
+            .filter(model.User.state != "deleted")
             .first()
         )
         if not conflicting_user:
@@ -710,7 +737,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         log.warning(
             "Cannot create username '%s': Auth0 email '%s' already belongs to CKAN username '%s'.",
             requested_username,
-            auth0_email,
+            normalised_email,
             conflicting_user.name,
         )
         raise tk.ValidationError(EMAIL_MISMATCH_ERROR_MESSAGE)

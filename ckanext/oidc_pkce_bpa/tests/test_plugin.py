@@ -1,4 +1,5 @@
 import json
+import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlparse
@@ -279,9 +280,10 @@ def test_existing_user_updates_username_and_email(plugin, clean_session, mock_se
 
 def test_email_conflict_with_other_user_triggers_error(plugin, clean_session, mock_services):
     """Email mismatches that collide with another username are blocked."""
+    shared_email = f"shared-{uuid.uuid4().hex}@example.com"
     conflicting_user = model.User(
         name="otheruser_email_conflict_1",
-        email="shared@example.com",
+        email=shared_email,
         fullname="Other User",
         password="",
     )
@@ -299,7 +301,7 @@ def test_email_conflict_with_other_user_triggers_error(plugin, clean_session, mo
 
     userinfo = {
         "sub": "auth0|999",
-        "email": "shared@example.com",
+        "email": shared_email,
         "name": "Legacy User",
         "https://biocommons.org.au/username": "legacyuser",
         "access_token": "token-999",
@@ -314,9 +316,10 @@ def test_email_conflict_with_other_user_triggers_error(plugin, clean_session, mo
 
 def test_existing_auth0_user_conflict_same_email_raises(plugin, clean_session, mock_services):
     """Existing Auth0-linked users error if another CKAN user shares their email."""
+    shared_email = f"shared-{uuid.uuid4().hex}@example.com"
     conflicting_user = model.User(
         name="otheruser_email_conflict_2",
-        email="shared@example.com",
+        email=shared_email,
         fullname="Other User",
         password="",
     )
@@ -334,10 +337,37 @@ def test_existing_auth0_user_conflict_same_email_raises(plugin, clean_session, m
 
     userinfo = {
         "sub": "auth0|shared",
-        "email": "shared@example.com",
+        "email": shared_email,
         "name": "Legacy User",
         "https://biocommons.org.au/username": "legacyuser",
         "access_token": "token-shared",
+    }
+
+    with pytest.raises(tk.ValidationError, match="email mismatch error"):
+        plugin.get_oidc_user(userinfo)
+
+    mock_services.token_service.get_user_roles.assert_not_called()
+    mock_services.membership_service.apply_role_based_memberships.assert_not_called()
+
+
+def test_username_lookup_without_auth0_id_blocks_email_mismatch(plugin, clean_session, mock_services):
+    """Users resolved only by username cannot override a different email."""
+    existing_user = model.User(
+        name="username-only-user",
+        email="legacy-email@example.com",
+        fullname="Legacy User",
+        password="",
+    )
+    model.Session.add(existing_user)
+    model.Session.commit()
+
+    new_email = f"new-{uuid.uuid4().hex}@example.com"
+    userinfo = {
+        "sub": "auth0|fresh",
+        "email": new_email,
+        "name": "Legacy User",
+        "https://biocommons.org.au/username": "username-only-user",
+        "access_token": "token-new",
     }
 
     with pytest.raises(tk.ValidationError, match="email mismatch error"):
@@ -364,6 +394,32 @@ def test_new_user_creation_blocked_when_email_taken(plugin, clean_session, mock_
         "name": "Amanda Red 1",
         "https://biocommons.org.au/username": "amanda-red-1",
         "access_token": "token-new",
+    }
+
+    with pytest.raises(tk.ValidationError, match="email mismatch error"):
+        plugin.get_oidc_user(userinfo)
+
+    mock_services.token_service.get_user_roles.assert_not_called()
+    mock_services.membership_service.apply_role_based_memberships.assert_not_called()
+
+
+def test_new_user_creation_blocked_when_email_taken_case_insensitive(plugin, clean_session, mock_services):
+    """Email matching ignores case to prevent duplicate aliases."""
+    conflicting_user = model.User(
+        name="case-email-owner",
+        email="CaseConflict@Example.com",
+        fullname="Case Owner",
+        password="",
+    )
+    model.Session.add(conflicting_user)
+    model.Session.commit()
+
+    userinfo = {
+        "sub": "auth0|case",
+        "email": "caseconflict@example.com",
+        "name": "Case Owner",
+        "https://biocommons.org.au/username": "case-auth0-user",
+        "access_token": "token-case",
     }
 
     with pytest.raises(tk.ValidationError, match="email mismatch error"):
