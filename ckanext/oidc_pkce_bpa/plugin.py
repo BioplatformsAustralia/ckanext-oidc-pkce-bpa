@@ -437,11 +437,12 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
         username = utils.extract_username(userinfo)
         email = userinfo.get("email")
-        user_auth0id_match = self._find_user_by_auth0_id(sub)
-        if user_auth0id_match:
+        user = self._find_user_by_auth0_id(sub)
+        user_had_auth0_id = user is not None
+        if user:
             # ensure that no other email or username is used for this Auth0 ID user
-            self._enforce_username_not_claimed_by_other_user(user_auth0id_match, username)
-            self._enforce_email_not_claimed_by_other_user(user_auth0id_match, email)
+            self._enforce_username_not_claimed_by_other_user(user, username)
+            self._enforce_email_not_claimed_by_other_user(user, email)
         else:
             user_username_match = model.User.get(username)
             if user_username_match:
@@ -460,7 +461,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             email=email,
             fullname=userinfo.get("name"),
         )
-        if updated_fields:
+        if user_had_auth0_id and updated_fields:
             self._flash_profile_sync_notice(updated_fields)
 
         access_token = userinfo.get("access_token")
@@ -735,7 +736,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
             return
 
         log.warning(
-            "Cannot create username '%s': Auth0 email '%s' already belongs to CKAN username '%s'.",
+            "Cannot create user with username '%s': . The Auth0 email '%s' already belongs to CKAN username '%s'.",
             requested_username,
             normalised_email,
             conflicting_user.name,
