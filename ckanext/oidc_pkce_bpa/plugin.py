@@ -12,6 +12,7 @@ from ckanext.oidc_pkce import views as oidc_views
 
 from ckan import authz, model
 from ckan.common import g, session
+from ckan.views import user as user_view
 from ckan.plugins import SingletonPlugin, implements
 from ckan.plugins.interfaces import IBlueprint, IAuthenticator, IConfigurer
 import ckan.plugins.toolkit as tk
