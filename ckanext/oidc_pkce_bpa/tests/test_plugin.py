@@ -1,4 +1,5 @@
 import json
+import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlparse
@@ -277,6 +278,121 @@ def test_existing_user_updates_username_and_email(plugin, clean_session, mock_se
     ]
 
 
+def test_email_conflict_with_other_user_triggers_error(plugin, clean_session, mock_services):
+    """Email mismatches that collide with another username are blocked."""
+    shared_email = f"shared-{uuid.uuid4().hex}@example.com"
+    conflicting_user = model.User(
+        name="otheruser_email_conflict_1",
+        email=shared_email,
+        fullname="Other User",
+        password="",
+    )
+    model.Session.add(conflicting_user)
+
+    user = model.User(
+        name="legacyuser",
+        email="old-email@example.com",
+        fullname="Legacy User",
+        password="",
+    )
+    user.plugin_extras = {"oidc_pkce": {"auth0_id": "auth0|999"}}
+    model.Session.add(user)
+    model.Session.commit()
+
+    userinfo = {
+        "sub": "auth0|999",
+        "email": shared_email,
+        "name": "Legacy User",
+        "https://biocommons.org.au/username": "legacyuser",
+        "access_token": "token-999",
+    }
+
+    with pytest.raises(tk.ValidationError, match="email mismatch error"):
+        plugin.get_oidc_user(userinfo)
+
+    mock_services.token_service.get_user_roles.assert_not_called()
+    mock_services.membership_service.apply_role_based_memberships.assert_not_called()
+
+
+def test_username_lookup_without_auth0_id_blocks_email_mismatch(plugin, clean_session, mock_services):
+    """Users resolved only by username cannot override a different email."""
+    existing_user = model.User(
+        name="username-only-user",
+        email="legacy-email@example.com",
+        fullname="Legacy User",
+        password="",
+    )
+    model.Session.add(existing_user)
+    model.Session.commit()
+
+    new_email = f"new-{uuid.uuid4().hex}@example.com"
+    userinfo = {
+        "sub": "auth0|fresh",
+        "email": new_email,
+        "name": "Legacy User",
+        "https://biocommons.org.au/username": "username-only-user",
+        "access_token": "token-new",
+    }
+
+    with pytest.raises(tk.ValidationError, match="email mismatch error"):
+        plugin.get_oidc_user(userinfo)
+
+    mock_services.token_service.get_user_roles.assert_not_called()
+    mock_services.membership_service.apply_role_based_memberships.assert_not_called()
+
+
+def test_new_user_creation_blocked_when_email_taken(plugin, clean_session, mock_services):
+    """Creating a new CKAN user fails if the Auth0 email is already in use."""
+    conflicting_user = model.User(
+        name="amanda-red-2",
+        email="amanda+red@biocommons.org.au",
+        fullname="Amanda Red 2",
+        password="",
+    )
+    model.Session.add(conflicting_user)
+    model.Session.commit()
+
+    userinfo = {
+        "sub": "auth0|new",
+        "email": "amanda+red@biocommons.org.au",
+        "name": "Amanda Red 1",
+        "https://biocommons.org.au/username": "amanda-red-1",
+        "access_token": "token-new",
+    }
+
+    with pytest.raises(tk.ValidationError, match="email mismatch error"):
+        plugin.get_oidc_user(userinfo)
+
+    mock_services.token_service.get_user_roles.assert_not_called()
+    mock_services.membership_service.apply_role_based_memberships.assert_not_called()
+
+
+def test_new_user_creation_blocked_when_email_taken_case_insensitive(plugin, clean_session, mock_services):
+    """Email matching ignores case to prevent duplicate aliases."""
+    conflicting_user = model.User(
+        name="case-email-owner",
+        email="CaseConflict@Example.com",
+        fullname="Case Owner",
+        password="",
+    )
+    model.Session.add(conflicting_user)
+    model.Session.commit()
+
+    userinfo = {
+        "sub": "auth0|case",
+        "email": "caseconflict@example.com",
+        "name": "Case Owner",
+        "https://biocommons.org.au/username": "case-auth0-user",
+        "access_token": "token-case",
+    }
+
+    with pytest.raises(tk.ValidationError, match="email mismatch error"):
+        plugin.get_oidc_user(userinfo)
+
+    mock_services.token_service.get_user_roles.assert_not_called()
+    mock_services.membership_service.apply_role_based_memberships.assert_not_called()
+
+
 def test_conflicting_username_triggers_error(plugin, clean_session, mock_services):
     """Renaming to a username that already exists is blocked."""
     existing_user = model.User(
@@ -305,7 +421,7 @@ def test_conflicting_username_triggers_error(plugin, clean_session, mock_service
         "access_token": "token-conflict",
     }
 
-    with pytest.raises(tk.ValidationError, match="already taken"):
+    with pytest.raises(tk.ValidationError, match="email mismatch error"):
         plugin.get_oidc_user(userinfo)
 
     mock_services.token_service.get_user_roles.assert_not_called()
