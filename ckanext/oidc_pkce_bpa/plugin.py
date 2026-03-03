@@ -46,6 +46,10 @@ EMAIL_MISMATCH_ERROR_MESSAGE = (
     "There is an email mismatch error with your account, please contact "
     "help@bioplatforms.org and include your name username and email."
 )
+DELETED_ACCOUNT_ERROR_MESSAGE = (
+    "Your CKAN account appears to be deleted. Please contact "
+    "help@bioplatforms.org and include your name username and email."
+)
 
 def _normalise_email(value: Optional[str]) -> Optional[str]:
     if not value:
@@ -439,6 +443,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         username = utils.extract_username(userinfo)
         email = userinfo.get("email")
         user = self._find_user_by_auth0_id(sub)
+        self._ensure_user_not_deleted(user)
         user_had_auth0_id = user is not None
         if user:
             # ensure that no other email or username is used for this Auth0 ID user
@@ -450,6 +455,7 @@ class OidcPkceBpaPlugin(SingletonPlugin):
                 self._enforce_username_email_alignment(user=user_username_match, auth0_email=email)
                 self._enforce_email_not_claimed_by_other_user(user_username_match, email)
                 user = user_username_match
+                self._ensure_user_not_deleted(user)
             elif email:
                 self._assert_email_not_taken(auth0_email=email, requested_username=username)
         if not user:
@@ -756,3 +762,10 @@ class OidcPkceBpaPlugin(SingletonPlugin):
 
         message = f"Your profile was updated to match your details in AAI profile: ({formatted})."
         tk.h.flash_notice(message)
+
+    def _ensure_user_not_deleted(self, user: Optional[model.User]) -> None:
+        if not user:
+            return
+        if getattr(user, "state", "").lower() == "deleted":
+            log.warning("OIDC login blocked: CKAN user '%s' is deleted.", user.name)
+            raise tk.ValidationError(DELETED_ACCOUNT_ERROR_MESSAGE)
