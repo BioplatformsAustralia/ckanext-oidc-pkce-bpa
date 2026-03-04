@@ -2,7 +2,12 @@
 
 # ckanext-oidc-pkce-bpa
 
-**TODO:** Put a description of your extension here:  What does it do? What features does it have? Consider including some screenshots or embedding a video!
+This CKAN extension extends the functionality of ckanext-oidc-pkce, a OpenID 
+connect with PKCE flow authenticator for CKAN, with customisations
+for the integration of the Bioplatforms Australia Data Portal into
+the Australian BioCommons Access authentication system.
+
+See: https://www.biocommons.org.au/access
 
 
 ## Requirements
@@ -138,6 +143,15 @@ Redirecting to a CKAN page provides a stable landing point, allowing the user to
 - Decide whether to retry login or navigate elsewhere.
 
 The default `oidc_pkce_bpa_public.login_error` view lives at `/user/login/error`, contains BPA-specific support messaging, and **requires** the `ckanext.oidc_pkce_bpa.support_email` setting (for example `aai-dev@biocommons.org.au`). Override `ckanext.oidc_pkce_bpa.denied_redirect_endpoint` if you need to render a different page, but keep it pointed at a CKAN route that does **not** re-trigger the OIDC login flow.
+
+
+## Acknowledgements
+
+This work was supported by Bioplatforms Australia.
+
+Bioplatforms Australia is made possible through investment funding provided
+by the Commonwealth Government National Collaborative Research
+Infrastructure Strategy (NCRIS).
 
 
 ## License
