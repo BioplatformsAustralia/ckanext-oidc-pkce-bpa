@@ -57,13 +57,102 @@ To install ckanext-oidc-pkce-bpa:
 
 ## Config settings
 
-None at present
+        ## OICD PKCE Settings
+        # URL of SSO application
+        # Could be overriden at runtime with env var CKANEXT_OIDC_PKCE_BASE_URL
+        ckanext.oidc_pkce.base_url = 
 
-**TODO:** Document any optional config settings here. For example:
+        # ClientID of SSO application
+        # Could be overriden at runtime with env var CKANEXT_OIDC_PKCE_CLIENT_ID
+        ckanext.oidc_pkce.client_id = 
 
-	# The minimum number of hours to wait before re-checking a resource
-	# (optional, default: 24).
-	ckanext.oidc_pkce_bpa.some_setting = some_default_value
+        # ClientSecret of SSO application
+        # (optional, only need id Client App defines a secret, default: "")
+        # Could be overriden at runtime with env var CKANEXT_OIDC_PKCE_CLIENT_SECRET
+        ckanext.oidc_pkce.client_secret = 
+
+        # Path to the authorization endpont inside SSO application
+        # (optional, default: /oauth2/default/v1/authorize)
+        ckanext.oidc_pkce.auth_path = /authorize
+
+        # Path to the token endpont inside SSO application
+        # (optional, default: /oauth2/default/v1/token)
+        ckanext.oidc_pkce.token_path = /oauth/token
+
+        # Path to the userinfo endpont inside SSO application
+        # (optional, default: /oauth2/default/v1/userinfo)
+        ckanext.oidc_pkce.userinfo_path = /userinfo
+
+        # Path to the authentication response handler inside CKAN application
+        # (optional, default: /user/login/oidc-pkce/callback)
+        # ckanext.oidc_pkce.redirect_path = /local/oidc/callback
+
+        # Scope of the authorization token. The plugin expects at least `sub`,
+        # `email` and `name` attributes.
+        # (optional, default: openid email profile)
+        ckanext.oidc_pkce.scope =  openid email profile
+
+        # For newly created CKAN users use the same ID as one from SSO application
+        # (optional, default: false)
+        ckanext.oidc_pkce.use_same_id = true
+
+        # URL to redirect user in case of failed login attempt.  When empty(default)
+        # redirects to `came_from` URL parameter if availabe or to CKAN login page
+        # otherwise.
+        # (optional, default: )
+        ckanext.oidc_pkce.error_redirect = /user/login
+
+        # When connecting to an existing(non-sso) account, override user's password
+        # so that it becomes impossible to login using CKAN authentication system.
+        # Enable this flag if you want to force SSO-logins for all users that once
+        # used SSO-login.
+        # (optional, default: false)
+        ckanext.oidc_pkce.munge_password = false
+
+        # Auth0 tenant domain for user authentication and Management API requests.
+        # This must match the tenant that issues ID tokens and where the target user’s `sub`
+        # (subject) identifier comes from. It’s used both for:
+        #   - Building the JWKS URL when decoding/verifying JWTs.
+        #   - Making Management API calls (if access token is not available).
+        #
+        # Example: login.test.biocommons.org.au
+        ##
+        ckanext.oidc_pkce_bpa.auth0_domain = 
+
+        # Auth0 API Audience for JWT verification or Management API calls.
+        #
+        # - If you’re verifying **user access tokens** issued by Auth0, this should be the
+        #   audience value configured in your Auth0 API settings for your CKAN application.
+        #
+        # - If you’re using the **Auth0 Management API** with client credentials, this should
+        #   be set to the Management API audience:
+        #       https://<your-auth0-domain>/api/v2/
+        #
+        # NOTE: The value must exactly match what Auth0 expects; a mismatch will cause
+        # JWT validation failures or Management API 401 errors.
+        #
+        # Example for Management API:
+        #   https://dev-bc.au.auth0.com/api/v2/
+        ckanext.oidc_pkce_bpa.api_audience = 
+
+        # The JWT claim to use as the CKAN username when authenticating via OIDC (Auth0).
+        # This should match the custom namespaced claim added by the Auth0 action.
+        ckanext.oidc_pkce_bpa.username_claim = 
+
+        # AAI portal login/registration/profile URLs
+        ckanext.oidc_pkce_bpa.login_redirect_url = 
+        ckanext.oidc_pkce_bpa.register_redirect_url = 
+        ckanext.oidc_pkce_bpa.profile_redirect_url = 
+
+        # Support email displayed on the login error page shown to denied users.
+        ckanext.oidc_pkce_bpa.support_email = 
+
+        #  Sets the OIDC claim used to extract user roles from Auth0, default is "https://biocommons.org.au/roles"
+        ckanext.oidc_pkce_bpa.roles_claim = 
+
+        # Mapping of Auth0 role names to lists of CKAN organisation IDs that should be granted membership when a user authenticates with the mapped role.
+        ckanext.oidc_pkce_bpa.role_org_mapping = 
+
 
 
 ## Developer installation
