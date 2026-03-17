@@ -35,6 +35,9 @@ SESSION_AUTH0_LOGOUT = "ckanext:oidc_pkce_bpa:auth0_logout_in_progress"
 _ORIGINAL_OIDC_CALLBACK = oidc_views.callback
 _ORIGINAL_OIDC_LOGIN = None
 _ORIGINAL_FORCE_LOGIN = None
+_ORIGINAL_USER_LOGOUT = None
+_ORIGINAL_USER_LOGGED_OUT = None
+_ORIGINAL_USER_LOGGED_OUT_PAGE = None
 SESSION_ADMIN_LOGIN_TOKEN = "ckanext:oidc_pkce_bpa:admin_login_token"
 SESSION_ADMIN_LOGIN_TARGET = "ckanext:oidc_pkce_bpa:admin_login_target"
 PROFILE_FIELD_LABELS = {
@@ -112,6 +115,40 @@ def _build_auth0_logout_url(*, return_to: str) -> Optional[str]:
         "returnTo": return_to,
     }
     return f"{base}?{urlencode(params)}"
+
+
+def _redirect_to_configured_logout_url():
+    logout_redirect_url = tk.config.get("ckanext.oidc_pkce_bpa.logout_redirect_url")
+    if logout_redirect_url:
+        return redirect(logout_redirect_url)
+    return None
+
+
+def _user_logout_redirect_override(*args, **kwargs):
+    response = _redirect_to_configured_logout_url()
+    if response is not None:
+        return response
+    if _ORIGINAL_USER_LOGOUT is not None:
+        return _ORIGINAL_USER_LOGOUT(*args, **kwargs)
+    return user_view.logout(*args, **kwargs)
+
+
+def _user_logged_out_redirect_override(*args, **kwargs):
+    response = _redirect_to_configured_logout_url()
+    if response is not None:
+        return response
+    if _ORIGINAL_USER_LOGGED_OUT is not None:
+        return _ORIGINAL_USER_LOGGED_OUT(*args, **kwargs)
+    return tk.redirect_to("user.logged_out_page")
+
+
+def _user_logged_out_page_redirect_override(*args, **kwargs):
+    response = _redirect_to_configured_logout_url()
+    if response is not None:
+        return response
+    if _ORIGINAL_USER_LOGGED_OUT_PAGE is not None:
+        return _ORIGINAL_USER_LOGGED_OUT_PAGE(*args, **kwargs)
+    return tk.render("user/logout.html")
 
 
 def _get_denied_redirect_endpoint():
@@ -221,6 +258,27 @@ def _register_callback_override(state):
     global _ORIGINAL_FORCE_LOGIN
     _ORIGINAL_FORCE_LOGIN = original
     state.app.view_functions[force_login_endpoint] = _force_login_override
+
+    logout_endpoint = "user.logout"
+    original_logout = state.app.view_functions.get(logout_endpoint)
+    if original_logout is not None:
+        global _ORIGINAL_USER_LOGOUT
+        _ORIGINAL_USER_LOGOUT = original_logout
+        state.app.view_functions[logout_endpoint] = _user_logout_redirect_override
+
+    logged_out_endpoint = "user.logged_out"
+    original_logged_out = state.app.view_functions.get(logged_out_endpoint)
+    if original_logged_out is not None:
+        global _ORIGINAL_USER_LOGGED_OUT
+        _ORIGINAL_USER_LOGGED_OUT = original_logged_out
+        state.app.view_functions[logged_out_endpoint] = _user_logged_out_redirect_override
+
+    logged_out_page_endpoint = "user.logged_out_page"
+    original_logged_out_page = state.app.view_functions.get(logged_out_page_endpoint)
+    if original_logged_out_page is not None:
+        global _ORIGINAL_USER_LOGGED_OUT_PAGE
+        _ORIGINAL_USER_LOGGED_OUT_PAGE = original_logged_out_page
+        state.app.view_functions[logged_out_page_endpoint] = _user_logged_out_page_redirect_override
 
 
 def _force_login_override(*args, **kwargs):
