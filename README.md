@@ -1,5 +1,3 @@
-[![Tests](https://github.com/BioplatformsAustralia/ckanext-oidc-pkce-bpa/workflows/Tests/badge.svg?branch=main)](https://github.com/BioplatformsAustralia/ckanext-oidc-pkce-bpa/actions)
-
 # ckanext-oidc-pkce-bpa
 
 This CKAN extension extends the functionality of ckanext-oidc-pkce, a OpenID 
@@ -139,10 +137,10 @@ To install ckanext-oidc-pkce-bpa:
         # This should match the custom namespaced claim added by the Auth0 action.
         ckanext.oidc_pkce_bpa.username_claim = 
 
-        # AAI portal login/registration/profile URLs
-        ckanext.oidc_pkce_bpa.login_redirect_url = 
+        # AAI portal registration/profile/logout URLs
         ckanext.oidc_pkce_bpa.register_redirect_url = 
         ckanext.oidc_pkce_bpa.profile_redirect_url = 
+        ckanext.oidc_pkce_bpa.logout_redirect_url = 
 
         # Support email displayed on the login error page shown to denied users.
         ckanext.oidc_pkce_bpa.support_email = 
@@ -154,24 +152,6 @@ To install ckanext-oidc-pkce-bpa:
         ckanext.oidc_pkce_bpa.role_org_mapping = 
 
 
-
-## Developer installation
-
-To install ckanext-oidc-pkce-bpa for development, install, activate your CKAN virtualenv and
-do:
-
-```bash
-    python3 -m venv venv
-    source venv/bin/activate
-    (venv) pip install -r dev-requirements.txt
-```
-
-## Tests
-
-To run the tests, do:
-```bash
-    pytest --ckan-ini=test.ini --cov=ckanext.oidc_pkce_bpa --disable-warnings ckanext/oidc_pkce_bpa
-```
 
 ## Releasing a new version of ckanext-oidc-pkce-bpa
 
@@ -233,6 +213,15 @@ Redirecting to a CKAN page provides a stable landing point, allowing the user to
 
 The default `oidc_pkce_bpa_public.login_error` view lives at `/user/login/error`, contains BPA-specific support messaging, and **requires** the `ckanext.oidc_pkce_bpa.support_email` setting (for example `aai-dev@biocommons.org.au`). Override `ckanext.oidc_pkce_bpa.denied_redirect_endpoint` if you need to render a different page, but keep it pointed at a CKAN route that does **not** re-trigger the OIDC login flow.
 
+## Development notes: Logout Redirect Behavior
+
+When an authenticated Auth0-backed user clicks CKAN's logout button, this extension first runs the normal CKAN logout handler so the CKAN session is cleared, then redirects the browser to `ckanext.oidc_pkce_bpa.logout_redirect_url`.
+
+In BPA's AAI setup this should generally point to the logout-start endpoint, for example:
+
+```ini
+ckanext.oidc_pkce_bpa.logout_redirect_url = https://dev.login.aai.test.biocommons.org.au/oidc/logout?redirect_uri=https://aaidemo.bioplatforms.com/user/logged_out_redirect
+```
 
 ## Acknowledgements
 
