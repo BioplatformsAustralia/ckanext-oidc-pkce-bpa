@@ -148,6 +148,13 @@ def get_redirect_registration_url() -> str:
     return register_redirect_url
 
 
+def get_logout_redirect_url() -> str:
+    logout_redirect_url = ckan_config.get("ckanext.oidc_pkce_bpa.logout_redirect_url")
+    if not logout_redirect_url:
+        raise tk.NotAuthorized("logout_redirect_url not set in ckan.ini!")
+    return logout_redirect_url
+
+
 class _SafeFormatDict(dict):
     """Provide empty defaults for missing format keys."""
 
