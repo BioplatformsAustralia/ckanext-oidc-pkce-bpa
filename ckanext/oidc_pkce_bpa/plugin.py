@@ -434,6 +434,7 @@ def login_error():
     )
 
 
+
 class OidcPkceBpaPlugin(SingletonPlugin):
     implements(IOidcPkce, inherit=True)
     implements(IAuthenticator, inherit=True)
@@ -550,6 +551,51 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         return _redirect_to_denied_login_page()
 
     # IAuthenticator
+
+    def identify(self):
+        """Authenticate API requests carrying an Auth0 access token.
+
+        Supports:  Authorization: Bearer <auth0-access-token>
+
+        This runs on every request alongside the parent plugin's session-based
+        identify(). We only act when a Bearer JWT is present; otherwise we
+        leave g.user untouched so session auth proceeds normally.
+        """
+        authz_header = request.headers.get("Authorization", "")
+        if not authz_header.startswith("Bearer "):
+            return
+
+        token = authz_header[len("Bearer "):]
+
+        # Auth0 JWTs are base64-encoded JSON and start with "eyJ".
+        # CKAN native API keys are UUIDs — skip those.
+        if not token.startswith("eyJ"):
+            return
+
+        token_service = utils.get_token_service()
+        claims = token_service.decode_access_token(token)
+        if not claims:
+            log.debug("Bearer token JWT verification failed; ignoring.")
+            return
+
+        # Primary lookup: stable Auth0 sub stored in plugin_extras
+        sub = claims.get("sub")
+        user = self._find_user_by_auth0_id(sub) if sub else None
+
+        # Fallback: username claim (e.g. preferred_username / nickname)
+        if not user:
+            try:
+                username = claims.get(utils.get_auth0_settings().username_claim)
+            except Exception:
+                username = None
+            if username:
+                user = model.User.get(username)
+
+        if not user or getattr(user, "state", "").lower() != "active":
+            return
+
+        g.user = user.name
+        g.userobj = user
 
     def login(self):
         login_path = tk.url_for("user.login")
