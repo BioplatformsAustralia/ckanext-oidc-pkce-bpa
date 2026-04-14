@@ -21,6 +21,10 @@ from sqlalchemy import func
 from ckanext.oidc_pkce.interfaces import IOidcPkce
 
 AUTHORIZATION_ERROR_MESSAGE = "You are not authorized to access this service."
+USERINFO_RATE_LIMIT_MESSAGE = (
+    "We couldn't sign you in right now because the login service is temporarily busy. "
+    "Please wait a minute and try again."
+)
 DEFAULT_DENIED_REDIRECT_ENDPOINT = "oidc_pkce_bpa_public.login_error"
 SUPPORT_EMAIL_CONFIG_KEY = "ckanext.oidc_pkce_bpa.support_email"
 
@@ -201,6 +205,15 @@ def _oidc_callback_with_email_check(*args, **kwargs):
             message = str(exc) or AUTHORIZATION_ERROR_MESSAGE
         log.warning("OIDC callback raised ValidationError: %s", message)
         tk.h.flash_error(message)
+        _clear_denied_login_session(force_prompt=False)
+        return _redirect_to_denied_login_page()
+    except tk.NotAuthorized as exc:
+        message = str(exc).strip() or AUTHORIZATION_ERROR_MESSAGE
+        log.warning("OIDC callback raised NotAuthorized: %s", message)
+        if "missing 'sub' claim" in message:
+            tk.h.flash_error(USERINFO_RATE_LIMIT_MESSAGE)
+        else:
+            tk.h.flash_error(AUTHORIZATION_ERROR_MESSAGE)
         _clear_denied_login_session(force_prompt=False)
         return _redirect_to_denied_login_page()
 
