@@ -153,6 +153,57 @@ To install ckanext-oidc-pkce-bpa:
 
 
 
+## Bearer token authentication for programmatic API access
+
+In addition to browser-based OIDC login, this extension supports authenticating
+CKAN API requests using an Auth0 access token passed as an HTTP Bearer token:
+
+```
+Authorization: Bearer <auth0-access-token>
+```
+
+This allows users to access protected resources programmatically — for example
+via `curl` or `ckanapi` — without a CKAN-issued API key:
+
+```bash
+curl -s "https://data.bioplatforms.com/api/3/action/resource_show?id=<id>" \
+  -H "Authorization: Bearer <auth0-access-token>"
+```
+
+### How it works
+
+The implementation uses CKAN's `IAuthenticator.identify()` hook
+([`plugin.py`](./ckanext/oidc_pkce_bpa/plugin.py)), which runs on every
+request. When an `Authorization: Bearer <jwt>` header is detected:
+
+1. The JWT is verified against Auth0's JWKS endpoint using RS256, checking audience and issuer
+2. The CKAN user is looked up by the stable Auth0 `sub` claim stored in `plugin_extras`, with a fallback to the configured `username_claim`
+3. `g.user` and `g.userobj` are set — CKAN's normal `check_access()` authorization then applies per action
+
+This means any downstream extension that builds its request context from
+`g.user` / `g.userobj` automatically gains Bearer token support with no
+additional changes.
+
+### Example: GA4GH DRS endpoints
+
+`ckanext-drs` is a worked example of this pattern. Its views construct the
+CKAN action context directly from `tk.g.user` and `tk.g.userobj`
+(see [`ckanext/drs/views.py`](https://github.com/BioplatformsAustralia/ckanext-drs/blob/master/ckanext/drs/views.py)),
+meaning DRS object resolution also works with a Bearer token:
+
+```bash
+curl -s "https://data.bioplatforms.com/ga4gh/drs/v1/objects/<resource-id>" \
+  -H "Authorization: Bearer <auth0-access-token>"
+```
+
+### Obtaining an access token
+
+For interactive/scripted use the recommended approach is Auth0's
+[Device Authorization Flow](https://auth0.com/docs/get-started/authentication-and-authorization-flow/device-authorization-flow),
+which opens a browser for the user to authenticate and returns a token to the
+calling script. The token must be issued with the audience matching
+`ckanext.oidc_pkce_bpa.api_audience` in `ckan.ini`.
+
 ## Releasing a new version of ckanext-oidc-pkce-bpa
 
 If ckanext-oidc-pkce-bpa should be available on PyPI you can follow these steps to publish a new version:
