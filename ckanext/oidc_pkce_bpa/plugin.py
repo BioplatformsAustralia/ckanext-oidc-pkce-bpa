@@ -13,6 +13,9 @@ from ckanext.oidc_pkce import views as oidc_views
 from ckan import authz, model
 from ckan.common import g, session
 from ckan.views import user as user_view
+
+SESSION_GALAXY_TOKEN = "ckanext:bpa:galaxy_access_token"
+SESSION_GALAXY_REFRESH_TOKEN = "ckanext:bpa:galaxy_refresh_token"
 from ckan.plugins import SingletonPlugin, implements
 from ckan.plugins.interfaces import IBlueprint, IAuthenticator, IConfigurer
 import ckan.plugins.toolkit as tk
@@ -494,6 +497,14 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         access_token = userinfo.get("access_token")
         if not access_token:
             raise tk.ValidationError("No access token available during get_oidc_user()!")
+
+        # Store tokens in session so server-side proxies (e.g. Galaxy Australia) can use them.
+        session[SESSION_GALAXY_TOKEN] = access_token
+        refresh_token = userinfo.get("refresh_token")
+        log.info("oidc login: access_token present=%s refresh_token present=%s",
+                 bool(access_token), bool(refresh_token))
+        if refresh_token:
+            session[SESSION_GALAXY_REFRESH_TOKEN] = refresh_token
 
         # Apply roles → membership once, as site user (authorised context).
         # The mapping of Auth0 roles to CKAN organisations is configured via
