@@ -16,7 +16,7 @@ from ckan.views import user as user_view
 
 SESSION_GALAXY_TOKEN = "ckanext:bpa:galaxy_access_token"
 SESSION_GALAXY_REFRESH_TOKEN = "ckanext:bpa:galaxy_refresh_token"
-from ckan.plugins import SingletonPlugin, implements
+from ckan.plugins import SingletonPlugin, implements, PluginImplementations
 from ckan.plugins.interfaces import IBlueprint, IAuthenticator, IConfigurer
 import ckan.plugins.toolkit as tk
 from sqlalchemy import func
@@ -155,6 +155,98 @@ def _clear_denied_login_session(*, force_prompt: bool):
         session.pop(SESSION_FORCE_PROMPT, None)
 
 
+def _oidc_callback_capturing_refresh_token():
+    """Full OIDC callback that merges the Auth0 refresh token into userinfo.
+
+    Replicates ckanext-oidc-pkce's callback but injects the refresh_token from
+    the token exchange response into the userinfo dict so that get_oidc_user()
+    can store it in the session. The base library discards it.
+    """
+    import base64 as _base64
+    import requests as _requests
+
+    oidc_views._no_cache()
+
+    came_from = oidc_config.error_redirect() or tk.url_for("user.login")
+    code = tk.request.args.get("code")
+    state = tk.request.args.get("state")
+
+    verifier = session.pop(oidc_views.SESSION_VERIFIER, None)
+    session_state = session.pop(oidc_views.SESSION_STATE, None)
+
+    error = None
+    if not verifier:
+        error = "Login process was not started properly"
+    elif not code:
+        error = "The code was not returned or is not accessible"
+    elif state != session_state:
+        error = "The app state does not match"
+
+    if error:
+        log.error("OIDC token exchange error: %s", error)
+        session[oidc_views.SESSION_ERROR] = error
+        return tk.redirect_to(came_from)
+
+    headers = {
+        "accept": "application/json",
+        "cache-control": "no-cache",
+        "content-type": "application/x-www-form-urlencoded",
+    }
+    if oidc_config.client_secret():
+        auth_str = oidc_config.client_id() + ":" + oidc_config.client_secret()
+        headers["Authorization"] = "Basic " + _base64.b64encode(auth_str.encode("ascii")).decode("ascii")
+
+    exchange = _requests.post(
+        oidc_config.token_url(),
+        headers=headers,
+        data={
+            "grant_type": "authorization_code",
+            "client_id": oidc_config.client_id(),
+            "redirect_uri": oidc_config.redirect_url(),
+            "code": code,
+            "code_verifier": verifier,
+        },
+    ).json()
+
+    if not exchange.get("token_type"):
+        error = "Unsupported token type. Should be 'Bearer'."
+        log.error("OIDC token exchange error: %s", error)
+        session[oidc_views.SESSION_ERROR] = error
+        return tk.redirect_to(came_from)
+
+    access_token = exchange["access_token"]
+
+    userinfo = _requests.get(
+        oidc_config.userinfo_url(),
+        headers={"Authorization": f"Bearer {access_token}"},
+    ).json()
+
+    # Merge token exchange fields so get_oidc_user() can store them in the session
+    userinfo.setdefault("access_token", access_token)
+    if exchange.get("refresh_token"):
+        userinfo["refresh_token"] = exchange["refresh_token"]
+        log.info("OIDC callback: refresh_token received from Auth0")
+    else:
+        log.info("OIDC callback: no refresh_token in exchange response (offline_access not granted?)")
+
+    user = oidc_utils.sync_user(userinfo)
+    if not user:
+        error = "Unique user not found"
+        log.error("OIDC callback: %s", error)
+        tk.h.flash_error(error)
+        session[oidc_views.SESSION_ERROR] = error
+        return tk.redirect_to(came_from)
+
+    for plugin in PluginImplementations(IOidcPkce):
+        resp = plugin.oidc_login_response(user)
+        if resp:
+            return resp
+
+    oidc_utils.login(user)
+    came_from = session.pop(oidc_views.SESSION_CAME_FROM, None)
+    return tk.redirect_to(came_from or tk.config.get("ckan.route_after_login", "dashboard.index"))
+
+
 def _oidc_callback_with_email_check(*args, **kwargs):
     """Intercept Auth0 callback errors to keep users on CKAN with clear messaging."""
     error = tk.request.args.get("error")
@@ -198,7 +290,7 @@ def _oidc_callback_with_email_check(*args, **kwargs):
         )
 
     try:
-        return _ORIGINAL_OIDC_CALLBACK(*args, **kwargs)
+        return _oidc_callback_capturing_refresh_token()
     except tk.ValidationError as exc:
         error_dict = getattr(exc, "error_dict", {}) or {}
         message = error_dict.get("message") if isinstance(error_dict, dict) else None
@@ -603,8 +695,10 @@ class OidcPkceBpaPlugin(SingletonPlugin):
                 user = model.User.get(username)
 
         if not user or getattr(user, "state", "").lower() != "active":
+            log.debug("identify: Bearer token valid but no active CKAN user found for sub=%s", sub)
             return
 
+        log.info("identify: Bearer token authenticated as CKAN user '%s'", user.name)
         g.user = user.name
         g.userobj = user
 
