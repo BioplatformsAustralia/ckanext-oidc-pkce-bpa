@@ -438,4 +438,3 @@ def get_user_roles(token: Any) -> List[str]:
 def apply_role_based_memberships(*, user_name: str, roles: List[str], context: Dict[str, Any]):
     get_membership_service().apply_role_based_memberships(user_name=user_name, roles=roles, context=context)
 
-

@@ -678,8 +678,23 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         token_service = utils.get_token_service()
         claims = token_service.decode_access_token(token)
         if not claims:
-            log.debug("Bearer token JWT verification failed; ignoring.")
-            return
+            # decode_access_token validates audience against CKAN's own API audience.
+            # Cross-service tokens (e.g. from Galaxy calling our DRS endpoint) are
+            # signed by the same Auth0 issuer but have a different audience.
+            # For identification purposes we only need signature + issuer — retry
+            # without audience enforcement.
+            try:
+                import jwt as _jwt
+                key = token_service._get_signing_key(token)
+                claims = _jwt.decode(
+                    token, key=key, algorithms=["RS256"],
+                    options={"verify_aud": False},
+                    issuer=token_service._settings.issuer,
+                )
+                log.info("identify: Bearer token accepted via cross-service (no-audience) validation")
+            except Exception as exc:
+                log.warning("identify: cross-service Bearer token validation failed: %s", exc)
+                return
 
         # Primary lookup: stable Auth0 sub stored in plugin_extras
         sub = claims.get("sub")
