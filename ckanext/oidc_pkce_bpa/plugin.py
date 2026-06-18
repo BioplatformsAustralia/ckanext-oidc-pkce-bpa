@@ -13,7 +13,10 @@ from ckanext.oidc_pkce import views as oidc_views
 from ckan import authz, model
 from ckan.common import g, session
 from ckan.views import user as user_view
-from ckan.plugins import SingletonPlugin, implements
+
+SESSION_GALAXY_TOKEN = "ckanext:bpa:galaxy_access_token"
+SESSION_GALAXY_REFRESH_TOKEN = "ckanext:bpa:galaxy_refresh_token"
+from ckan.plugins import SingletonPlugin, implements, PluginImplementations
 from ckan.plugins.interfaces import IBlueprint, IAuthenticator, IConfigurer
 import ckan.plugins.toolkit as tk
 from sqlalchemy import func
@@ -152,6 +155,98 @@ def _clear_denied_login_session(*, force_prompt: bool):
         session.pop(SESSION_FORCE_PROMPT, None)
 
 
+def _oidc_callback_capturing_refresh_token():
+    """Full OIDC callback that merges the Auth0 refresh token into userinfo.
+
+    Replicates ckanext-oidc-pkce's callback but injects the refresh_token from
+    the token exchange response into the userinfo dict so that get_oidc_user()
+    can store it in the session. The base library discards it.
+    """
+    import base64 as _base64
+    import requests as _requests
+
+    oidc_views._no_cache()
+
+    came_from = oidc_config.error_redirect() or tk.url_for("user.login")
+    code = tk.request.args.get("code")
+    state = tk.request.args.get("state")
+
+    verifier = session.pop(oidc_views.SESSION_VERIFIER, None)
+    session_state = session.pop(oidc_views.SESSION_STATE, None)
+
+    error = None
+    if not verifier:
+        error = "Login process was not started properly"
+    elif not code:
+        error = "The code was not returned or is not accessible"
+    elif state != session_state:
+        error = "The app state does not match"
+
+    if error:
+        log.error("OIDC token exchange error: %s", error)
+        session[oidc_views.SESSION_ERROR] = error
+        return tk.redirect_to(came_from)
+
+    headers = {
+        "accept": "application/json",
+        "cache-control": "no-cache",
+        "content-type": "application/x-www-form-urlencoded",
+    }
+    if oidc_config.client_secret():
+        auth_str = oidc_config.client_id() + ":" + oidc_config.client_secret()
+        headers["Authorization"] = "Basic " + _base64.b64encode(auth_str.encode("ascii")).decode("ascii")
+
+    exchange = _requests.post(
+        oidc_config.token_url(),
+        headers=headers,
+        data={
+            "grant_type": "authorization_code",
+            "client_id": oidc_config.client_id(),
+            "redirect_uri": oidc_config.redirect_url(),
+            "code": code,
+            "code_verifier": verifier,
+        },
+    ).json()
+
+    if not exchange.get("token_type"):
+        error = "Unsupported token type. Should be 'Bearer'."
+        log.error("OIDC token exchange error: %s", error)
+        session[oidc_views.SESSION_ERROR] = error
+        return tk.redirect_to(came_from)
+
+    access_token = exchange["access_token"]
+
+    userinfo = _requests.get(
+        oidc_config.userinfo_url(),
+        headers={"Authorization": f"Bearer {access_token}"},
+    ).json()
+
+    # Merge token exchange fields so get_oidc_user() can store them in the session
+    userinfo.setdefault("access_token", access_token)
+    if exchange.get("refresh_token"):
+        userinfo["refresh_token"] = exchange["refresh_token"]
+        log.info("OIDC callback: refresh_token received from Auth0")
+    else:
+        log.info("OIDC callback: no refresh_token in exchange response (offline_access not granted?)")
+
+    user = oidc_utils.sync_user(userinfo)
+    if not user:
+        error = "Unique user not found"
+        log.error("OIDC callback: %s", error)
+        tk.h.flash_error(error)
+        session[oidc_views.SESSION_ERROR] = error
+        return tk.redirect_to(came_from)
+
+    for plugin in PluginImplementations(IOidcPkce):
+        resp = plugin.oidc_login_response(user)
+        if resp:
+            return resp
+
+    oidc_utils.login(user)
+    came_from = session.pop(oidc_views.SESSION_CAME_FROM, None)
+    return tk.redirect_to(came_from or tk.config.get("ckan.route_after_login", "dashboard.index"))
+
+
 def _oidc_callback_with_email_check(*args, **kwargs):
     """Intercept Auth0 callback errors to keep users on CKAN with clear messaging."""
     error = tk.request.args.get("error")
@@ -195,7 +290,7 @@ def _oidc_callback_with_email_check(*args, **kwargs):
         )
 
     try:
-        return _ORIGINAL_OIDC_CALLBACK(*args, **kwargs)
+        return _oidc_callback_capturing_refresh_token()
     except tk.ValidationError as exc:
         error_dict = getattr(exc, "error_dict", {}) or {}
         message = error_dict.get("message") if isinstance(error_dict, dict) else None
@@ -434,6 +529,7 @@ def login_error():
     )
 
 
+
 class OidcPkceBpaPlugin(SingletonPlugin):
     implements(IOidcPkce, inherit=True)
     implements(IAuthenticator, inherit=True)
@@ -494,6 +590,14 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         if not access_token:
             raise tk.ValidationError("No access token available during get_oidc_user()!")
 
+        # Store tokens in session so server-side proxies (e.g. Galaxy Australia) can use them.
+        session[SESSION_GALAXY_TOKEN] = access_token
+        refresh_token = userinfo.get("refresh_token")
+        log.info("oidc login: access_token present=%s refresh_token present=%s",
+                 bool(access_token), bool(refresh_token))
+        if refresh_token:
+            session[SESSION_GALAXY_REFRESH_TOKEN] = refresh_token
+
         # Apply roles → membership once, as site user (authorised context).
         # The mapping of Auth0 roles to CKAN organisations is configured via
         # `ckanext.oidc_pkce_bpa.role_org_mapping`.
@@ -550,6 +654,68 @@ class OidcPkceBpaPlugin(SingletonPlugin):
         return _redirect_to_denied_login_page()
 
     # IAuthenticator
+
+    def identify(self):
+        """Authenticate API requests carrying an Auth0 access token.
+
+        Supports:  Authorization: Bearer <auth0-access-token>
+
+        This runs on every request alongside the parent plugin's session-based
+        identify(). We only act when a Bearer JWT is present; otherwise we
+        leave g.user untouched so session auth proceeds normally.
+        """
+        authz_header = request.headers.get("Authorization", "")
+        if not authz_header.startswith("Bearer "):
+            return
+
+        token = authz_header[len("Bearer "):]
+
+        # Auth0 JWTs are base64-encoded JSON and start with "eyJ".
+        # CKAN native API keys are UUIDs — skip those.
+        if not token.startswith("eyJ"):
+            return
+
+        token_service = utils.get_token_service()
+        claims = token_service.decode_access_token(token)
+        if not claims:
+            # decode_access_token validates audience against CKAN's own API audience.
+            # Cross-service tokens (e.g. from Galaxy calling our DRS endpoint) are
+            # signed by the same Auth0 issuer but have a different audience.
+            # For identification purposes we only need signature + issuer — retry
+            # without audience enforcement.
+            try:
+                import jwt as _jwt
+                key = token_service._get_signing_key(token)
+                claims = _jwt.decode(
+                    token, key=key, algorithms=["RS256"],
+                    options={"verify_aud": False},
+                    issuer=token_service._settings.issuer,
+                )
+                log.info("identify: Bearer token accepted via cross-service (no-audience) validation")
+            except Exception as exc:
+                log.warning("identify: cross-service Bearer token validation failed: %s", exc)
+                return
+
+        # Primary lookup: stable Auth0 sub stored in plugin_extras
+        sub = claims.get("sub")
+        user = self._find_user_by_auth0_id(sub) if sub else None
+
+        # Fallback: username claim (e.g. preferred_username / nickname)
+        if not user:
+            try:
+                username = claims.get(utils.get_auth0_settings().username_claim)
+            except Exception:
+                username = None
+            if username:
+                user = model.User.get(username)
+
+        if not user or getattr(user, "state", "").lower() != "active":
+            log.debug("identify: Bearer token valid but no active CKAN user found for sub=%s", sub)
+            return
+
+        log.info("identify: Bearer token authenticated as CKAN user '%s'", user.name)
+        g.user = user.name
+        g.userobj = user
 
     def login(self):
         login_path = tk.url_for("user.login")
